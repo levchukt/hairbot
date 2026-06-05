@@ -65,7 +65,15 @@ async def send_sales_sequence(user_id: int, context: ContextTypes.DEFAULT_TYPE):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    db.add_user(user.id, user.username, user.first_name)
+
+    # Визначаємо джерело з параметра ?start=ig1
+    source = "direct"
+    if context.args:
+        raw = context.args[0].lower()
+        if raw in ("ig1", "ig2", "ig3"):
+            source = raw
+
+    db.add_user(user.id, user.username, user.first_name, source=source)
 
     await update.message.reply_text(
         MSG_WELCOME,
@@ -303,11 +311,21 @@ async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     stats = db.get_stats()
+
+    # Build per-source breakdown
+    source_lines = ""
+    source_labels = {"ig1": "Instagram 1", "ig2": "Instagram 2", "ig3": "Instagram 3", "direct": "Прямой вход"}
+    for s in stats["sources"]:
+        label = source_labels.get(s["source"], s["source"])
+        conv = (s["paid"] / s["total"] * 100) if s["total"] else 0
+        source_lines += f"\n  {label}: {s['total']} чел. / {s['paid']} оплат ({conv:.1f}%)"
+
     await update.message.reply_text(
         f"📊 <b>Статистика бота</b>\n\n"
-        f"👥 Всего пользователей: {stats['total_users']}\n"
-        f"💰 Оплатили: {stats['paid_users']}\n"
-        f"📈 Конверсия: {stats['conversion']:.1f}%",
+        f"👥 Всего: <b>{stats['total_users']}</b>\n"
+        f"💰 Оплатили: <b>{stats['paid_users']}</b>\n"
+        f"📈 Общая конверсия: <b>{stats['conversion']:.1f}%</b>\n\n"
+        f"<b>По источникам:</b>{source_lines}",
         parse_mode="HTML"
     )
 

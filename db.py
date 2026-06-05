@@ -21,17 +21,23 @@ class Database:
                     joined_at   TEXT,
                     paid        INTEGER DEFAULT 0,
                     paid_at     TEXT,
-                    pay_method  TEXT
+                    pay_method  TEXT,
+                    source      TEXT DEFAULT 'direct'
                 )
             """)
+            # Add source column if upgrading from old db
+            try:
+                conn.execute("ALTER TABLE users ADD COLUMN source TEXT DEFAULT 'direct'")
+            except Exception:
+                pass
             conn.commit()
 
-    def add_user(self, user_id: int, username: Optional[str], first_name: Optional[str]):
+    def add_user(self, user_id: int, username: Optional[str], first_name: Optional[str], source: str = "direct"):
         with self._conn() as conn:
             conn.execute("""
-                INSERT OR IGNORE INTO users (user_id, username, first_name, joined_at)
-                VALUES (?, ?, ?, ?)
-            """, (user_id, username, first_name, datetime.utcnow().isoformat()))
+                INSERT OR IGNORE INTO users (user_id, username, first_name, joined_at, source)
+                VALUES (?, ?, ?, ?, ?)
+            """, (user_id, username, first_name, datetime.utcnow().isoformat(), source))
             conn.commit()
 
     def is_paid(self, user_id: int) -> bool:
@@ -53,5 +59,15 @@ class Database:
         with self._conn() as conn:
             total = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
             paid = conn.execute("SELECT COUNT(*) FROM users WHERE paid = 1").fetchone()[0]
+            # Per-source stats
+            sources = conn.execute("""
+                SELECT source, COUNT(*) as total, SUM(paid) as paid
+                FROM users GROUP BY source ORDER BY total DESC
+            """).fetchall()
         conversion = (paid / total * 100) if total else 0
-        return {"total_users": total, "paid_users": paid, "conversion": conversion}
+        return {
+            "total_users": total,
+            "paid_users": paid,
+            "conversion": conversion,
+            "sources": [{"source": r[0], "total": r[1], "paid": r[2] or 0} for r in sources]
+        }
