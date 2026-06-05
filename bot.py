@@ -9,7 +9,7 @@ from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
-    ContextTypes
+    ContextTypes, JobQueue
 )
 from aiohttp import web
 
@@ -275,9 +275,11 @@ async def check_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
-async def send_course_access(user_id: int, context: ContextTypes.DEFAULT_TYPE):
+async def send_course_access(user_id: int, bot_or_context):
+    from telegram import Bot
+    bot = bot_or_context if isinstance(bot_or_context, Bot) else bot_or_context.bot
     course_link = os.getenv("COURSE_LINK", "https://t.me/your_course_channel")
-    await context.bot.send_message(
+    await bot.send_message(
         chat_id=user_id,
         text=f"🎉 <b>Добро пожаловать в протокол!</b>\n\n"
              f"Доступ к <b>{COURSE_NAME}</b> открыт.\n\n"
@@ -432,7 +434,7 @@ async def wayforpay_webhook(request: web.Request) -> web.Response:
 # ─────────────────────────────────────────────
 
 async def main():
-    app = Application.builder().token(BOT_TOKEN).build()
+    app = Application.builder().token(BOT_TOKEN).job_queue(JobQueue()).build()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("support", support_command))
