@@ -40,6 +40,35 @@ db = Database()
 #  /start
 # ─────────────────────────────────────────────
 
+async def guide_read_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Користувач натиснув 'Я прочитал'."""
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
+
+    # Знімаємо кнопку
+    await query.edit_message_reply_markup(reply_markup=None)
+
+    # Скасовуємо страховочний таймер
+    jobs = context.job_queue.get_jobs_by_name(f"sales_fallback_{user_id}")
+    for job in jobs:
+        job.schedule_removal()
+
+    # Одразу надсилаємо оффер
+    await send_sales_sequence(user_id, context)
+
+
+async def scheduled_sales_fallback(context: ContextTypes.DEFAULT_TYPE):
+    """Страховка — спрацьовує через 24 год якщо кнопку не натиснули."""
+    user_id = context.job.user_id
+
+    # Не надсилаємо якщо вже купив
+    if db.is_paid(user_id):
+        return
+
+    await send_sales_sequence(user_id, context)
+
+
 async def scheduled_sales(context: ContextTypes.DEFAULT_TYPE):
     """Викликається job_queue через 12 хвилин після отримання гайду."""
     user_id = context.job.user_id
@@ -137,12 +166,13 @@ async def send_guide(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
 
     # Надсилаємо продажне повідомлення через 12 хвилин
+    # Страховка — через 24 год якщо кнопку не натиснули
     context.job_queue.run_once(
-        scheduled_sales,
-        when=720,  # 12 хвилин
+        scheduled_sales_fallback,
+        when=86400,
         chat_id=user_id,
         user_id=user_id,
-        name=f"sales_{user_id}"
+        name=f"sales_fallback_{user_id}"
     )
 
 
@@ -467,6 +497,7 @@ async def main():
     app.add_handler(CommandHandler("support", support_command))
     app.add_handler(CommandHandler("approve", admin_approve))
     app.add_handler(CommandHandler("stats", admin_stats))
+    app.add_handler(CallbackQueryHandler(guide_read_callback, pattern="^guide_read$"))
     app.add_handler(CallbackQueryHandler(buy_course, pattern="^buy_course$"))
     app.add_handler(CallbackQueryHandler(pay_wayforpay, pattern="^pay_wayforpay$"))
     app.add_handler(CallbackQueryHandler(pay_crypto, pattern="^pay_crypto$"))
