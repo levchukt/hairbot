@@ -9,7 +9,7 @@ from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
-    ContextTypes, JobQueue
+    ContextTypes
 )
 from aiohttp import web
 
@@ -122,14 +122,24 @@ async def send_guide(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="HTML"
     )
 
-    # Страховка — через 24 год якщо кнопку не натиснули
-    context.job_queue.run_once(
-        scheduled_sales_fallback,
-        when=86400,
-        chat_id=user_id,
-        user_id=user_id,
-        name=f"sales_fallback_{user_id}"
-    )
+    # Страховка — через 24 часа если кнопку не нажали
+    asyncio.create_task(_fallback_task(user_id, context.bot))
+
+
+async def _fallback_task(user_id: int, bot):
+    await asyncio.sleep(86400)
+    if not db.is_paid(user_id):
+        await bot.send_message(chat_id=user_id, text=MSG_PAIN, parse_mode="HTML")
+        await asyncio.sleep(8)
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton("💳 Купить протокол — $39", callback_data="buy_course")
+        ]])
+        await bot.send_message(
+            chat_id=user_id,
+            text=MSG_OFFER,
+            reply_markup=keyboard,
+            parse_mode="HTML"
+        )
 
 
 # ─────────────────────────────────────────────
@@ -142,18 +152,6 @@ async def guide_read_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     user_id = query.from_user.id
 
     await query.edit_message_reply_markup(reply_markup=None)
-
-    # Скасовуємо страховку
-    for job in context.job_queue.get_jobs_by_name(f"sales_fallback_{user_id}"):
-        job.schedule_removal()
-
-    await send_sales_sequence(user_id, context)
-
-
-async def scheduled_sales_fallback(context: ContextTypes.DEFAULT_TYPE):
-    user_id = context.job.user_id
-    if db.is_paid(user_id):
-        return
     await send_sales_sequence(user_id, context)
 
 
@@ -434,7 +432,7 @@ async def wayforpay_webhook(request: web.Request) -> web.Response:
 # ─────────────────────────────────────────────
 
 async def main():
-    app = Application.builder().token(BOT_TOKEN).job_queue(JobQueue()).build()
+    app = Application.builder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("support", support_command))
