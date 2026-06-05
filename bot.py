@@ -169,7 +169,7 @@ async def send_guide(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Страховка — через 24 год якщо кнопку не натиснули
     context.job_queue.run_once(
         scheduled_sales_fallback,
-        when=86400,
+        when=30,
         chat_id=user_id,
         user_id=user_id,
         name=f"sales_fallback_{user_id}"
