@@ -2,17 +2,16 @@ import logging
 import os
 import hashlib
 import hmac
-import json
 import time
+import asyncio
 from datetime import datetime
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
-    ContextTypes, MessageHandler, filters
+    ContextTypes
 )
 from aiohttp import web
-import aiohttp
 
 from config import (
     BOT_TOKEN, GUIDE_PDF_PATH, WAYFORPAY_MERCHANT_ACCOUNT,
@@ -40,62 +39,9 @@ db = Database()
 #  /start
 # ─────────────────────────────────────────────
 
-async def guide_read_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Користувач натиснув 'Я прочитал'."""
-    query = update.callback_query
-    await query.answer()
-    user_id = query.from_user.id
-
-    # Знімаємо кнопку
-    await query.edit_message_reply_markup(reply_markup=None)
-
-    # Скасовуємо страховочний таймер
-    jobs = context.job_queue.get_jobs_by_name(f"sales_fallback_{user_id}")
-    for job in jobs:
-        job.schedule_removal()
-
-    # Одразу надсилаємо оффер
-    await send_sales_sequence(user_id, context)
-
-
-async def scheduled_sales_fallback(context: ContextTypes.DEFAULT_TYPE):
-    """Страховка — спрацьовує через 24 год якщо кнопку не натиснули."""
-    user_id = context.job.user_id
-
-    # Не надсилаємо якщо вже купив
-    if db.is_paid(user_id):
-        return
-
-    await send_sales_sequence(user_id, context)
-
-
-async def scheduled_sales(context: ContextTypes.DEFAULT_TYPE):
-    """Викликається job_queue через 12 хвилин після отримання гайду."""
-    user_id = context.job.user_id
-    await send_sales_sequence(user_id, context)
-
-
-async def send_sales_sequence(user_id: int, context: ContextTypes.DEFAULT_TYPE):
-    """Біль → пауза 8 сек → оффер з кнопкою."""
-    await context.bot.send_message(chat_id=user_id, text=MSG_PAIN, parse_mode="HTML")
-    await asyncio.sleep(8)
-
-    keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton("💳 Купить протокол — $39", callback_data="buy_course")
-    ]])
-
-    await context.bot.send_message(
-        chat_id=user_id,
-        text=MSG_OFFER,
-        reply_markup=keyboard,
-        parse_mode="HTML"
-    )
-
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
 
-    # Визначаємо джерело з параметра ?start=ig1
     source = "direct"
     if context.args:
         raw = context.args[0].lower()
@@ -104,14 +50,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     db.add_user(user.id, user.username, user.first_name, source=source)
 
-    await update.message.reply_text(
-        MSG_WELCOME,
-        parse_mode="HTML"
-    )
-
+    await update.message.reply_text(MSG_WELCOME, parse_mode="HTML")
     await asyncio.sleep(2)
     await send_guide(update, context)
 
+
+# ─────────────────────────────────────────────
+#  GUIDE
+# ─────────────────────────────────────────────
 
 def _save_file_id_to_env(file_id: str):
     env_path = ".env"
@@ -135,7 +81,6 @@ async def send_guide(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cached_file_id = os.getenv("GUIDE_FILE_ID", "")
 
     if cached_file_id:
-        # Миттєво — файл вже є на серверах Telegram
         await context.bot.send_document(
             chat_id=user_id,
             document=cached_file_id,
@@ -143,7 +88,6 @@ async def send_guide(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="HTML",
         )
     else:
-        # Перший раз — завантажуємо і зберігаємо file_id
         logger.info("First upload of guide PDF...")
         with open(GUIDE_PDF_PATH, "rb") as f:
             msg = await context.bot.send_document(
@@ -161,30 +105,65 @@ async def send_guide(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if ADMIN_ID:
             await context.bot.send_message(
                 chat_id=ADMIN_ID,
-                text=f"\u2705 <b>Гайд завантажено!</b>\n\nДодай в Railway Variables:\n<code>GUIDE_FILE_ID={file_id}</code>",
+                text=f"✅ <b>Гайд завантажено!</b>\n\nДодай в Railway Variables:\n<code>GUIDE_FILE_ID={file_id}</code>",
                 parse_mode="HTML"
             )
 
-    # Надсилаємо продажне повідомлення через 12 хвилин
+    await asyncio.sleep(1)
+
+    # Кнопка під гайдом
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ Я прочитал", callback_data="guide_read")
+    ]])
+    await context.bot.send_message(
+        chat_id=user_id,
+        text="Как только прочитаешь — нажми кнопку, пришлю кое-что важное 👇",
+        reply_markup=keyboard,
+        parse_mode="HTML"
+    )
+
     # Страховка — через 24 год якщо кнопку не натиснули
     context.job_queue.run_once(
         scheduled_sales_fallback,
-        when=30,
+        when=86400,
         chat_id=user_id,
         user_id=user_id,
         name=f"sales_fallback_{user_id}"
     )
 
 
+# ─────────────────────────────────────────────
+#  SALES SEQUENCE
+# ─────────────────────────────────────────────
+
+async def guide_read_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
+
+    await query.edit_message_reply_markup(reply_markup=None)
+
+    # Скасовуємо страховку
+    for job in context.job_queue.get_jobs_by_name(f"sales_fallback_{user_id}"):
+        job.schedule_removal()
+
+    await send_sales_sequence(user_id, context)
+
+
+async def scheduled_sales_fallback(context: ContextTypes.DEFAULT_TYPE):
+    user_id = context.job.user_id
+    if db.is_paid(user_id):
+        return
+    await send_sales_sequence(user_id, context)
+
+
 async def send_sales_sequence(user_id: int, context: ContextTypes.DEFAULT_TYPE):
-    """2 повідомлення: біль → оффер з кнопкою."""
     await context.bot.send_message(chat_id=user_id, text=MSG_PAIN, parse_mode="HTML")
-    await asyncio.sleep(5)
+    await asyncio.sleep(8)
 
     keyboard = InlineKeyboardMarkup([[
         InlineKeyboardButton("💳 Купить протокол — $39", callback_data="buy_course")
     ]])
-
     await context.bot.send_message(
         chat_id=user_id,
         text=MSG_OFFER,
@@ -212,9 +191,8 @@ async def buy_course(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("₿ Оплатить криптой", callback_data="pay_crypto")],
         [InlineKeyboardButton("❓ Вопрос / помощь", callback_data="support")],
     ])
-
     await query.message.reply_text(
-        "Выбери удобный способ оплаты:",
+        MSG_PAYMENT_CHOOSE,
         reply_markup=keyboard,
         parse_mode="HTML"
     )
@@ -231,13 +209,11 @@ async def pay_wayforpay(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("💳 Перейти к оплате", url=payment_url)],
         [InlineKeyboardButton("✅ Я оплатил", callback_data="check_payment")],
     ])
-
     await query.message.reply_text(
         f"<b>Оплата через WayForPay</b>\n\n"
         f"Сумма: <b>${COURSE_PRICE_USD}</b>\n\n"
-        f"Нажми кнопку ниже, перейди к оплате, и после успешной оплаты "
-        f"вернись сюда и нажми «Я оплатил».\n\n"
-        f"⚡️ Доступ к курсу откроется автоматически после подтверждения оплаты.",
+        f"Перейди к оплате и после успешной оплаты вернись сюда и нажми «Я оплатил».\n\n"
+        f"⚡️ Доступ откроется автоматически после подтверждения.",
         reply_markup=keyboard,
         parse_mode="HTML"
     )
@@ -252,7 +228,6 @@ async def pay_crypto(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("✅ Я отправил", callback_data="crypto_sent")],
         [InlineKeyboardButton("❓ Нужна помощь", callback_data="support")],
     ])
-
     await query.message.reply_text(
         MSG_PAYMENT_CRYPTO.format(
             btc=CRYPTO_WALLET_BTC,
@@ -271,17 +246,15 @@ async def crypto_sent(update: Update, context: ContextTypes.DEFAULT_TYPE):
     username = query.from_user.username or str(user_id)
 
     await query.message.reply_text(
-        "✅ Принято! Мы проверим транзакцию и откроем доступ в течение <b>1–2 часов</b>.\n\n"
-        "Если возникнут вопросы — напиши /support",
+        "✅ Принято! Проверим транзакцию и откроем доступ в течение <b>1–2 часов</b>.\n\n"
+        "Если вопросы — напиши /support",
         parse_mode="HTML"
     )
-
-    # Notify admin
     if ADMIN_ID:
         await context.bot.send_message(
             chat_id=ADMIN_ID,
             text=f"🔔 <b>Крипто-оплата от @{username}</b> (ID: {user_id})\n"
-                 f"Нужна ручная проверка. Используй /approve {user_id} для выдачи доступа.",
+                 f"Используй /approve {user_id} для выдачи доступа.",
             parse_mode="HTML"
         )
 
@@ -303,29 +276,24 @@ async def check_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def send_course_access(user_id: int, context: ContextTypes.DEFAULT_TYPE):
-    """Send course access link/content to paid user."""
-    # TODO: замените COURSE_LINK на реальную ссылку
     course_link = os.getenv("COURSE_LINK", "https://t.me/your_course_channel")
-
     await context.bot.send_message(
         chat_id=user_id,
-        text=f"🎉 <b>Добро пожаловать в курс!</b>\n\n"
-             f"Твой доступ к <b>{COURSE_NAME}</b> открыт.\n\n"
-             f"👉 <a href='{course_link}'>Перейти к материалам курса</a>\n\n"
+        text=f"🎉 <b>Добро пожаловать в протокол!</b>\n\n"
+             f"Доступ к <b>{COURSE_NAME}</b> открыт.\n\n"
+             f"👉 <a href='{course_link}'>Перейти к материалам</a>\n\n"
              f"Если ссылка не работает — напиши /support",
         parse_mode="HTML"
     )
 
 
 # ─────────────────────────────────────────────
-#  ADMIN COMMANDS
+#  ADMIN
 # ─────────────────────────────────────────────
 
 async def admin_approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Admin: manually approve a user. Usage: /approve USER_ID"""
     if str(update.effective_user.id) != str(ADMIN_ID):
         return
-
     try:
         target_id = int(context.args[0])
         db.mark_paid(target_id, method="crypto_manual")
@@ -336,15 +304,12 @@ async def admin_approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Admin: show stats."""
     if str(update.effective_user.id) != str(ADMIN_ID):
         return
 
     stats = db.get_stats()
-
-    # Build per-source breakdown
-    source_lines = ""
     source_labels = {"ig1": "Instagram 1", "ig2": "Instagram 2", "ig3": "Instagram 3", "direct": "Прямой вход"}
+    source_lines = ""
     for s in stats["sources"]:
         label = source_labels.get(s["source"], s["source"])
         conv = (s["paid"] / s["total"] * 100) if s["total"] else 0
@@ -354,7 +319,7 @@ async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📊 <b>Статистика бота</b>\n\n"
         f"👥 Всего: <b>{stats['total_users']}</b>\n"
         f"💰 Оплатили: <b>{stats['paid_users']}</b>\n"
-        f"📈 Общая конверсия: <b>{stats['conversion']:.1f}%</b>\n\n"
+        f"📈 Конверсия: <b>{stats['conversion']:.1f}%</b>\n\n"
         f"<b>По источникам:</b>{source_lines}",
         parse_mode="HTML"
     )
@@ -379,9 +344,7 @@ async def support_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ─────────────────────────────────────────────
 
 def generate_wayforpay_url(user_id: int) -> str:
-    """Generate WayForPay payment URL."""
     import urllib.parse
-
     order_id = f"hair_{user_id}_{int(time.time())}"
     order_date = int(time.time())
 
@@ -397,38 +360,26 @@ def generate_wayforpay_url(user_id: int) -> str:
         "productPrice[]": COURSE_PRICE_USD,
     }
 
-    # Generate signature
     sign_string = (
-        f"{WAYFORPAY_MERCHANT_ACCOUNT};"
-        f"{WAYFORPAY_DOMAIN};"
-        f"{order_id};"
-        f"{order_date};"
-        f"{COURSE_PRICE_USD};"
-        f"USD;"
-        f"{COURSE_NAME};"
-        f"1;"
-        f"{COURSE_PRICE_USD}"
+        f"{WAYFORPAY_MERCHANT_ACCOUNT};{WAYFORPAY_DOMAIN};{order_id};"
+        f"{order_date};{COURSE_PRICE_USD};USD;{COURSE_NAME};1;{COURSE_PRICE_USD}"
     )
     signature = hmac.new(
         WAYFORPAY_MERCHANT_KEY.encode(),
         sign_string.encode(),
         hashlib.md5
     ).hexdigest()
-
     params["merchantSignature"] = signature
 
-    base_url = "https://secure.wayforpay.com/pay"
-    return f"{base_url}?{urllib.parse.urlencode(params)}"
+    return f"https://secure.wayforpay.com/pay?{urllib.parse.urlencode(params)}"
 
 
 async def wayforpay_webhook(request: web.Request) -> web.Response:
-    """Handle WayForPay payment confirmation webhook."""
     try:
         data = await request.json()
     except Exception:
         return web.Response(status=400)
 
-    # Verify signature
     expected_fields = [
         "merchantAccount", "orderReference", "amount",
         "currency", "authCode", "cardPan", "transactionStatus", "reasonCode"
@@ -446,27 +397,21 @@ async def wayforpay_webhook(request: web.Request) -> web.Response:
 
     if data.get("transactionStatus") == "Approved":
         order_ref = data.get("orderReference", "")
-        # order_ref format: hair_{user_id}_{timestamp}
         try:
             user_id = int(order_ref.split("_")[1])
             db.mark_paid(user_id, method="wayforpay")
             logger.info(f"Payment confirmed for user {user_id}")
-
-            # Access will be sent by check_payment button press
-            # Or we can push it proactively via bot:
-            app = request.app.get("bot_app")
-            if app:
-                await app.bot.send_message(
+            bot_app = request.app.get("bot_app")
+            if bot_app:
+                await bot_app.bot.send_message(
                     chat_id=user_id,
                     text=MSG_PAYMENT_SUCCESS,
                     parse_mode="HTML"
                 )
-                await send_course_access(user_id, app.bot)
-
+                await send_course_access(user_id, bot_app.bot)
         except (IndexError, ValueError) as e:
-            logger.error(f"Can't parse user_id from order_ref: {order_ref} — {e}")
+            logger.error(f"Can't parse user_id from {order_ref}: {e}")
 
-    # WayForPay expects this response
     accept_time = int(time.time())
     sign_resp = hmac.new(
         WAYFORPAY_MERCHANT_KEY.encode(),
@@ -486,13 +431,9 @@ async def wayforpay_webhook(request: web.Request) -> web.Response:
 #  MAIN
 # ─────────────────────────────────────────────
 
-import asyncio
-
-
 async def main():
     app = Application.builder().token(BOT_TOKEN).build()
 
-    # Handlers
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("support", support_command))
     app.add_handler(CommandHandler("approve", admin_approve))
@@ -505,14 +446,12 @@ async def main():
     app.add_handler(CallbackQueryHandler(check_payment, pattern="^check_payment$"))
     app.add_handler(CallbackQueryHandler(support_callback, pattern="^support$"))
 
-    # Webhook server for WayForPay
     web_app = web.Application()
     web_app["bot_app"] = app
     web_app.router.add_post("/webhook/wayforpay", wayforpay_webhook)
 
     webhook_port = int(os.getenv("PORT", 8080))
 
-    # Run bot + web server together
     await app.initialize()
     await app.start()
 
@@ -524,7 +463,7 @@ async def main():
     logger.info(f"Bot started. Webhook server on port {webhook_port}")
 
     await app.updater.start_polling(drop_pending_updates=True)
-    await asyncio.Event().wait()  # run forever
+    await asyncio.Event().wait()
 
 
 if __name__ == "__main__":
