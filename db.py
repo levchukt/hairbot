@@ -25,11 +25,15 @@ class Database:
                     source      TEXT DEFAULT 'direct'
                 )
             """)
-            # Add source column if upgrading from old db
-            try:
-                conn.execute("ALTER TABLE users ADD COLUMN source TEXT DEFAULT 'direct'")
-            except Exception:
-                pass
+            # Add columns if upgrading from old db
+            for col, definition in [
+                ("source", "TEXT DEFAULT 'direct'"),
+                ("offer_sent", "INTEGER DEFAULT 0"),
+            ]:
+                try:
+                    conn.execute(f"ALTER TABLE users ADD COLUMN {col} {definition}")
+                except Exception:
+                    pass
             conn.commit()
 
     def add_user(self, user_id: int, username: Optional[str], first_name: Optional[str], source: str = "direct"):
@@ -39,6 +43,11 @@ class Database:
                 VALUES (?, ?, ?, ?, ?)
             """, (user_id, username, first_name, datetime.utcnow().isoformat(), source))
             conn.commit()
+
+    def user_exists(self, user_id: int) -> bool:
+        with self._conn() as conn:
+            row = conn.execute("SELECT 1 FROM users WHERE user_id = ?", (user_id,)).fetchone()
+            return row is not None
 
     def is_paid(self, user_id: int) -> bool:
         with self._conn() as conn:
@@ -54,6 +63,16 @@ class Database:
                 WHERE user_id = ?
             """, (datetime.utcnow().isoformat(), method, user_id))
             conn.commit()
+
+    def mark_offer_sent(self, user_id: int):
+        with self._conn() as conn:
+            conn.execute("UPDATE users SET offer_sent = 1 WHERE user_id = ?", (user_id,))
+            conn.commit()
+
+    def has_offer_sent(self, user_id: int) -> bool:
+        with self._conn() as conn:
+            row = conn.execute("SELECT offer_sent FROM users WHERE user_id = ?", (user_id,)).fetchone()
+            return bool(row and row[0])
 
     def get_stats(self) -> dict:
         with self._conn() as conn:

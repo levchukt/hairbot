@@ -4,7 +4,6 @@ import hashlib
 import hmac
 import time
 import asyncio
-from datetime import datetime
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -48,7 +47,24 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if raw in ("ig1", "ig2", "ig3"):
             source = raw
 
+    is_new = not db.user_exists(user.id)
     db.add_user(user.id, user.username, user.first_name, source=source)
+
+    if not is_new:
+        # Повторний /start — просто нагадуємо
+        if db.is_paid(user.id):
+            await update.message.reply_text("У тебя уже есть доступ к протоколу 👇", parse_mode="HTML")
+            await send_course_access(user.id, context)
+        else:
+            keyboard = InlineKeyboardMarkup([[
+                InlineKeyboardButton("💳 Купить протокол — $39", callback_data="buy_course")
+            ]])
+            await update.message.reply_text(
+                "Гайд ты уже получил 👆\n\nГотов перейти к полному протоколу?",
+                reply_markup=keyboard,
+                parse_mode="HTML"
+            )
+        return
 
     await update.message.reply_text(MSG_WELCOME, parse_mode="HTML")
     await asyncio.sleep(2)
@@ -122,24 +138,14 @@ async def send_guide(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="HTML"
     )
 
-    # Страховка — через 24 часа если кнопку не нажали
-    asyncio.create_task(_fallback_task(user_id, context.bot))
-
-
-async def _fallback_task(user_id: int, bot):
-    await asyncio.sleep(86400)
-    if not db.is_paid(user_id):
-        await bot.send_message(chat_id=user_id, text=MSG_PAIN, parse_mode="HTML")
-        await asyncio.sleep(8)
-        keyboard = InlineKeyboardMarkup([[
-            InlineKeyboardButton("💳 Купить протокол — $39", callback_data="buy_course")
-        ]])
-        await bot.send_message(
-            chat_id=user_id,
-            text=MSG_OFFER,
-            reply_markup=keyboard,
-            parse_mode="HTML"
-        )
+    # Страховка — через 24 год якщо кнопку не натиснули
+    context.job_queue.run_once(
+        scheduled_sales_fallback,
+        when=86400,
+        chat_id=user_id,
+        user_id=user_id,
+        name=f"sales_fallback_{user_id}"
+    )
 
 
 # ─────────────────────────────────────────────
@@ -152,10 +158,28 @@ async def guide_read_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     user_id = query.from_user.id
 
     await query.edit_message_reply_markup(reply_markup=None)
+
+    # Якщо вже отримав оффер або купив — не надсилаємо повторно
+    if db.has_offer_sent(user_id) or db.is_paid(user_id):
+        return
+
+    # Скасовуємо страховку
+    for job in context.job_queue.get_jobs_by_name(f"sales_fallback_{user_id}"):
+        job.schedule_removal()
+
+    await send_sales_sequence(user_id, context)
+
+
+async def scheduled_sales_fallback(context: ContextTypes.DEFAULT_TYPE):
+    user_id = context.job.user_id
+    # Не надсилаємо якщо вже купив або вже отримав оффер через кнопку
+    if db.is_paid(user_id) or db.has_offer_sent(user_id):
+        return
     await send_sales_sequence(user_id, context)
 
 
 async def send_sales_sequence(user_id: int, context: ContextTypes.DEFAULT_TYPE):
+    db.mark_offer_sent(user_id)
     await context.bot.send_message(chat_id=user_id, text=MSG_PAIN, parse_mode="HTML")
     await asyncio.sleep(8)
 
@@ -273,11 +297,9 @@ async def check_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
-async def send_course_access(user_id: int, bot_or_context):
-    from telegram import Bot
-    bot = bot_or_context if isinstance(bot_or_context, Bot) else bot_or_context.bot
+async def send_course_access(user_id: int, context: ContextTypes.DEFAULT_TYPE):
     course_link = os.getenv("COURSE_LINK", "https://t.me/your_course_channel")
-    await bot.send_message(
+    await context.bot.send_message(
         chat_id=user_id,
         text=f"🎉 <b>Добро пожаловать в протокол!</b>\n\n"
              f"Доступ к <b>{COURSE_NAME}</b> открыт.\n\n"
@@ -408,7 +430,18 @@ async def wayforpay_webhook(request: web.Request) -> web.Response:
                     text=MSG_PAYMENT_SUCCESS,
                     parse_mode="HTML"
                 )
-                await send_course_access(user_id, bot_app.bot)
+                course_link = os.getenv("COURSE_LINK", "https://t.me/your_course_channel")
+                access_text = (
+                    f"🎉 <b>Добро пожаловать в протокол!</b>\n\n"
+                    f"Доступ к <b>{COURSE_NAME}</b> открыт.\n\n"
+                    f'👉 <a href="{course_link}">Перейти к материалам</a>\n\n'
+                    f"Если ссылка не работает — напиши /support"
+                )
+                await bot_app.bot.send_message(
+                    chat_id=user_id,
+                    text=access_text,
+                    parse_mode="HTML"
+                )
         except (IndexError, ValueError) as e:
             logger.error(f"Can't parse user_id from {order_ref}: {e}")
 
