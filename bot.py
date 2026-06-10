@@ -57,7 +57,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await send_course_access(user.id, context)
         else:
             keyboard = InlineKeyboardMarkup([[
-                InlineKeyboardButton("💳 Купить протокол — $39", callback_data="buy_course")
+                InlineKeyboardButton("💳 Открыть полный протокол — $39", callback_data="buy_course")
             ]])
             await update.message.reply_text(
                 "Гайд ты уже получил 👆\n\nГотов перейти к полному протоколу?",
@@ -209,7 +209,7 @@ async def buy_course(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🇺🇦 Оплатить картой (WayForPay)", callback_data="pay_wayforpay")],
+        [InlineKeyboardButton("Оплатить картой", callback_data="pay_wayforpay")],
         [InlineKeyboardButton("₿ Оплатить криптой", callback_data="pay_crypto")],
         [InlineKeyboardButton("❓ Вопрос / помощь", callback_data="support")],
     ])
@@ -225,7 +225,9 @@ async def pay_wayforpay(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     user_id = query.from_user.id
 
-    payment_url = generate_wayforpay_url(user_id)
+    # Посилання на наш сервер який робить POST-редирект на WayForPay
+    base_url = os.getenv("RAILWAY_PUBLIC_URL", f"http://localhost:{os.getenv('PORT', 8080)}")
+    payment_url = f"{base_url}/pay/{user_id}"
 
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("💳 Перейти к оплате", url=payment_url)],
@@ -365,22 +367,10 @@ async def support_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 #  WAYFORPAY WEBHOOK
 # ─────────────────────────────────────────────
 
-def generate_wayforpay_url(user_id: int) -> str:
-    import urllib.parse
+def generate_wayforpay_data(user_id: int) -> dict:
+    """Повертає всі поля для POST-форми WayForPay."""
     order_id = f"hair_{user_id}_{int(time.time())}"
     order_date = int(time.time())
-
-    params = {
-        "merchantAccount": WAYFORPAY_MERCHANT_ACCOUNT,
-        "merchantDomainName": WAYFORPAY_DOMAIN,
-        "orderReference": order_id,
-        "orderDate": order_date,
-        "amount": COURSE_PRICE_USD,
-        "currency": "USD",
-        "productName[]": COURSE_NAME,
-        "productCount[]": "1",
-        "productPrice[]": COURSE_PRICE_USD,
-    }
 
     sign_string = (
         f"{WAYFORPAY_MERCHANT_ACCOUNT};{WAYFORPAY_DOMAIN};{order_id};"
@@ -391,9 +381,60 @@ def generate_wayforpay_url(user_id: int) -> str:
         sign_string.encode(),
         hashlib.md5
     ).hexdigest()
-    params["merchantSignature"] = signature
 
-    return f"https://secure.wayforpay.com/pay?{urllib.parse.urlencode(params)}"
+    return {
+        "merchantAccount": WAYFORPAY_MERCHANT_ACCOUNT,
+        "merchantDomainName": WAYFORPAY_DOMAIN,
+        "orderReference": order_id,
+        "orderDate": str(order_date),
+        "amount": str(COURSE_PRICE_USD),
+        "currency": "USD",
+        "productName": COURSE_NAME,
+        "productCount": "1",
+        "productPrice": str(COURSE_PRICE_USD),
+        "merchantSignature": signature,
+    }
+
+
+def generate_wayforpay_html(user_id: int) -> str:
+    """Генерує HTML-сторінку яка автоматично відправляє POST на WayForPay."""
+    data = generate_wayforpay_data(user_id)
+
+    fields_html = ""
+    for key, value in data.items():
+        fields_html += f'        <input type="hidden" name="{key}" value="{value}">\n'
+
+    return f"""<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Перехід до оплати...</title>
+  <style>
+    body {{ font-family: sans-serif; display: flex; justify-content: center;
+           align-items: center; height: 100vh; margin: 0; background: #f5f5f5; }}
+    .box {{ text-align: center; }}
+    p {{ color: #555; }}
+  </style>
+</head>
+<body>
+  <div class="box">
+    <p>Переходим к оплате...</p>
+    <form id="wfp" method="POST" action="https://secure.wayforpay.com/pay">
+{fields_html}    </form>
+  </div>
+  <script>document.getElementById("wfp").submit();</script>
+</body>
+</html>"""
+
+
+async def wayforpay_redirect(request: web.Request) -> web.Response:
+    """GET /pay/{user_id} — повертає HTML-форму яка POST-ить на WayForPay."""
+    try:
+        user_id = int(request.match_info["user_id"])
+    except (KeyError, ValueError):
+        return web.Response(status=400, text="Bad user_id")
+    html = generate_wayforpay_html(user_id)
+    return web.Response(text=html, content_type="text/html")
 
 
 async def wayforpay_webhook(request: web.Request) -> web.Response:
@@ -482,6 +523,7 @@ async def main():
     web_app = web.Application()
     web_app["bot_app"] = app
     web_app.router.add_post("/webhook/wayforpay", wayforpay_webhook)
+    web_app.router.add_get("/pay/{user_id}", wayforpay_redirect)
 
     webhook_port = int(os.getenv("PORT", 8080))
 
