@@ -393,6 +393,7 @@ def generate_wayforpay_data(user_id: int) -> dict:
         "productCount": "1",
         "productPrice": str(COURSE_PRICE_USD),
         "merchantSignature": signature,
+         "returnUrl": "https://t.me/protocol_hair_bot",
     }
 
 
