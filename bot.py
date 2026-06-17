@@ -17,7 +17,7 @@ from config import (
     BOT_TOKEN, GUIDE_PDF_PATH, WAYFORPAY_MERCHANT_ACCOUNT,
     WAYFORPAY_MERCHANT_KEY, WAYFORPAY_DOMAIN, COURSE_PRICE_USD,
     COURSE_NAME, CRYPTO_WALLET_BTC, CRYPTO_WALLET_USDT, ADMIN_ID,
-    CRYPTOBOT_API_TOKEN
+    CRYPTOBOT_API_TOKEN, CRYPTOBOT_API_URL
 )
 from messages import (
     MSG_WELCOME, MSG_GUIDE_CAPTION, MSG_PAIN, MSG_OFFER,
@@ -249,7 +249,7 @@ async def create_cryptobot_invoice(user_id: int) -> str | None:
     """Створює інвойс у CryptoBot, повертає посилання на оплату."""
     async with aiohttp.ClientSession() as session:
         async with session.post(
-            "https://pay.crypt.bot/api/createInvoice",
+            f"{CRYPTOBOT_API_URL}/createInvoice",
             headers={"Crypto-Pay-API-Token": CRYPTOBOT_API_TOKEN},
             json={
                 "asset": "USDT",
