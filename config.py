@@ -19,4 +19,4 @@ CRYPTO_WALLET_USDT = os.getenv("CRYPTO_WALLET_USDT", "")  # TRC-20
 
 # Course
 COURSE_NAME = "ПОЛНЫЙ ПРОТОКОЛ ВОССТАНОВЛЕНИЯ ВОЛОС"
-COURSE_PRICE_USD = 39
+COURSE_PRICE_USD = 1
