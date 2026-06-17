@@ -394,6 +394,7 @@ def generate_wayforpay_data(user_id: int) -> dict:
         "productPrice": str(COURSE_PRICE_USD),
         "merchantSignature": signature,
          "returnUrl": "https://t.me/protocol_hair_bot",
+        "serviceUrl": "https://web-production-cb698.up.railway.app/webhook/wayforpay",
     }
 
 
