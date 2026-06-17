@@ -11,11 +11,13 @@ from telegram.ext import (
     ContextTypes
 )
 from aiohttp import web
+import aiohttp
 
 from config import (
     BOT_TOKEN, GUIDE_PDF_PATH, WAYFORPAY_MERCHANT_ACCOUNT,
     WAYFORPAY_MERCHANT_KEY, WAYFORPAY_DOMAIN, COURSE_PRICE_USD,
-    COURSE_NAME, CRYPTO_WALLET_BTC, CRYPTO_WALLET_USDT, ADMIN_ID
+    COURSE_NAME, CRYPTO_WALLET_BTC, CRYPTO_WALLET_USDT, ADMIN_ID,
+    CRYPTOBOT_API_TOKEN
 )
 from messages import (
     MSG_WELCOME, MSG_GUIDE_CAPTION, MSG_PAIN, MSG_OFFER,
@@ -243,44 +245,53 @@ async def pay_wayforpay(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def create_cryptobot_invoice(user_id: int) -> str | None:
+    """Створює інвойс у CryptoBot, повертає посилання на оплату."""
+    async with aiohttp.ClientSession() as session:
+        async with session.post(
+            "https://pay.crypt.bot/api/createInvoice",
+            headers={"Crypto-Pay-API-Token": CRYPTOBOT_API_TOKEN},
+            json={
+                "asset": "USDT",
+                "amount": str(COURSE_PRICE_USD),
+                "description": COURSE_NAME,
+                "payload": str(user_id),
+                "paid_btn_name": "openBot",
+                "paid_btn_url": "https://t.me/protocol_hair_bot",
+            }
+        ) as resp:
+            result = await resp.json()
+            if result.get("ok"):
+                return result["result"]["bot_invoice_url"]
+            logger.error(f"CryptoBot createInvoice failed: {result}")
+            return None
+
+
 async def pay_crypto(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
 
+    invoice_url = await create_cryptobot_invoice(user_id)
+    if not invoice_url:
+        await query.message.reply_text(
+            "⚠️ Не удалось создать счёт. Попробуй ещё раз или напиши /support",
+            parse_mode="HTML"
+        )
+        return
+
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ Я отправил", callback_data="crypto_sent")],
-        [InlineKeyboardButton("❓ Нужна помощь", callback_data="support")],
+        [InlineKeyboardButton("₿ Оплатить через CryptoBot", url=invoice_url)],
+        [InlineKeyboardButton("✅ Я оплатил", callback_data="check_payment")],
     ])
     await query.message.reply_text(
-        MSG_PAYMENT_CRYPTO.format(
-            btc=CRYPTO_WALLET_BTC,
-            usdt=CRYPTO_WALLET_USDT,
-            amount=COURSE_PRICE_USD
-        ),
+        f"<b>Оплата криптовалютой</b>\n\n"
+        f"Сумма: <b>${COURSE_PRICE_USD}</b> (в USDT)\n\n"
+        f"Перейди к оплате и после успешной оплаты вернись сюда и нажми «Я оплатил».\n\n"
+        f"⚡️ Доступ откроется автоматически после подтверждения.",
         reply_markup=keyboard,
         parse_mode="HTML"
     )
-
-
-async def crypto_sent(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    user_id = query.from_user.id
-    username = query.from_user.username or str(user_id)
-
-    await query.message.reply_text(
-        "✅ Принято! Проверим транзакцию и откроем доступ в течение <b>1–2 часов</b>.\n\n"
-        "Если вопросы — напиши /support",
-        parse_mode="HTML"
-    )
-    if ADMIN_ID:
-        await context.bot.send_message(
-            chat_id=ADMIN_ID,
-            text=f"🔔 <b>Крипто-оплата от @{username}</b> (ID: {user_id})\n"
-                 f"Используй /approve {user_id} для выдачи доступа.",
-            parse_mode="HTML"
-        )
 
 
 async def check_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -504,6 +515,45 @@ async def wayforpay_webhook(request: web.Request) -> web.Response:
 
 
 # ─────────────────────────────────────────────
+#  CRYPTOBOT WEBHOOK
+# ─────────────────────────────────────────────
+
+async def cryptobot_webhook(request: web.Request) -> web.Response:
+    raw_body = await request.read()
+    signature = request.headers.get("crypto-pay-api-signature", "")
+
+    secret = hashlib.sha256(CRYPTOBOT_API_TOKEN.encode()).digest()
+    expected_sig = hmac.new(secret, raw_body, hashlib.sha256).hexdigest()
+
+    if signature != expected_sig:
+        logger.warning("CryptoBot: invalid signature")
+        return web.Response(status=403)
+
+    data = await request.json()
+
+    if data.get("update_type") == "invoice_paid":
+        invoice = data.get("payload", {})
+        try:
+            user_id = int(invoice.get("payload", ""))
+            db.mark_paid(user_id, method="cryptobot")
+            logger.info(f"Crypto payment confirmed for user {user_id}")
+            bot_app = request.app.get("bot_app")
+            if bot_app:
+                course_link = os.getenv("COURSE_LINK", "https://t.me/your_course_channel")
+                access_text = (
+                    f"🎉 <b>Добро пожаловать в протокол!</b>\n\n"
+                    f"Доступ к <b>{COURSE_NAME}</b> открыт.\n\n"
+                    f'👉 <a href="{course_link}">Перейти к материалам</a>\n\n'
+                    f"Если ссылка не работает — напиши /support"
+                )
+                await bot_app.bot.send_message(chat_id=user_id, text=access_text, parse_mode="HTML")
+        except (TypeError, ValueError) as e:
+            logger.error(f"Can't parse user_id from CryptoBot payload: {e}")
+
+    return web.Response(status=200, text="OK")
+
+
+# ─────────────────────────────────────────────
 #  MAIN
 # ─────────────────────────────────────────────
 
@@ -518,13 +568,13 @@ async def main():
     app.add_handler(CallbackQueryHandler(buy_course, pattern="^buy_course$"))
     app.add_handler(CallbackQueryHandler(pay_wayforpay, pattern="^pay_wayforpay$"))
     app.add_handler(CallbackQueryHandler(pay_crypto, pattern="^pay_crypto$"))
-    app.add_handler(CallbackQueryHandler(crypto_sent, pattern="^crypto_sent$"))
     app.add_handler(CallbackQueryHandler(check_payment, pattern="^check_payment$"))
     app.add_handler(CallbackQueryHandler(support_callback, pattern="^support$"))
 
     web_app = web.Application()
     web_app["bot_app"] = app
     web_app.router.add_post("/webhook/wayforpay", wayforpay_webhook)
+    web_app.router.add_post("/webhook/cryptobot", cryptobot_webhook)
     web_app.router.add_get("/pay/{user_id}", wayforpay_redirect)
 
     webhook_port = int(os.getenv("PORT", 8080))

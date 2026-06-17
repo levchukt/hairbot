@@ -17,6 +17,9 @@ WAYFORPAY_DOMAIN = os.getenv("WAYFORPAY_DOMAIN", "yourdomain.com")
 CRYPTO_WALLET_BTC = os.getenv("CRYPTO_WALLET_BTC", "")
 CRYPTO_WALLET_USDT = os.getenv("CRYPTO_WALLET_USDT", "")  # TRC-20
 
+# CryptoBot (Crypto Pay API)
+CRYPTOBOT_API_TOKEN = os.getenv("CRYPTOBOT_API_TOKEN", "")
+
 # Course
 COURSE_NAME = "ПОЛНЫЙ ПРОТОКОЛ ВОССТАНОВЛЕНИЯ ВОЛОС"
 COURSE_PRICE_USD = 1
