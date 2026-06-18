@@ -17,11 +17,11 @@ from config import (
     BOT_TOKEN, GUIDE_PDF_PATH, WAYFORPAY_MERCHANT_ACCOUNT,
     WAYFORPAY_MERCHANT_KEY, WAYFORPAY_DOMAIN, COURSE_PRICE_USD,
     COURSE_NAME, CRYPTO_WALLET_BTC, CRYPTO_WALLET_USDT, ADMIN_ID,
-    CRYPTOBOT_API_TOKEN, CRYPTOBOT_API_URL
+    CRYPTOBOT_API_TOKEN, CRYPTOBOT_API_URL, OFFER_FOLLOWUP_DELAY_SECONDS
 )
 from messages import (
-    MSG_WELCOME, MSG_GUIDE_CAPTION, MSG_PAIN,
-    MSG_OFFER_1, MSG_OFFER_2, MSG_OFFER_3,
+    MSG_WELCOME, MSG_GUIDE_CAPTION, MSG_REFLECTION, MSG_PAIN,
+    MSG_OFFER_1, MSG_OFFER_2, MSG_COST_OF_WAITING, MSG_OFFER_3, MSG_FOLLOWUP,
     MSG_PAYMENT_CHOOSE, MSG_PAYMENT_CRYPTO_CHOOSE, MSG_PAYMENT_CRYPTO_MANUAL,
     MSG_PAYMENT_SUCCESS, MSG_PAYMENT_ALREADY,
     MSG_SUPPORT
@@ -183,6 +183,10 @@ async def scheduled_sales_fallback(context: ContextTypes.DEFAULT_TYPE):
 
 async def send_sales_sequence(user_id: int, context: ContextTypes.DEFAULT_TYPE):
     db.mark_offer_sent(user_id)
+
+    await context.bot.send_message(chat_id=user_id, text=MSG_REFLECTION, parse_mode="HTML")
+    await asyncio.sleep(5)
+
     await context.bot.send_message(chat_id=user_id, text=MSG_PAIN, parse_mode="HTML")
     await asyncio.sleep(8)
 
@@ -192,12 +196,39 @@ async def send_sales_sequence(user_id: int, context: ContextTypes.DEFAULT_TYPE):
     await context.bot.send_message(chat_id=user_id, text=MSG_OFFER_2, parse_mode="HTML")
     await asyncio.sleep(4)
 
+    await context.bot.send_message(chat_id=user_id, text=MSG_COST_OF_WAITING, parse_mode="HTML")
+    await asyncio.sleep(4)
+
     keyboard = InlineKeyboardMarkup([[
         InlineKeyboardButton("💳 Купить протокол — $39", callback_data="buy_course")
     ]])
     await context.bot.send_message(
         chat_id=user_id,
         text=MSG_OFFER_3,
+        reply_markup=keyboard,
+        parse_mode="HTML"
+    )
+
+    # Не продажне нагадування через 30-60 хв, якщо досі не оплатив
+    context.job_queue.run_once(
+        scheduled_offer_followup,
+        when=OFFER_FOLLOWUP_DELAY_SECONDS,
+        chat_id=user_id,
+        user_id=user_id,
+        name=f"offer_followup_{user_id}"
+    )
+
+
+async def scheduled_offer_followup(context: ContextTypes.DEFAULT_TYPE):
+    user_id = context.job.user_id
+    if db.is_paid(user_id):
+        return
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("Открыть полный протокол", callback_data="buy_course")
+    ]])
+    await context.bot.send_message(
+        chat_id=user_id,
+        text=MSG_FOLLOWUP,
         reply_markup=keyboard,
         parse_mode="HTML"
     )
