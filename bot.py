@@ -23,6 +23,7 @@ from config import (
 from messages import (
     MSG_WELCOME, MSG_GUIDE_CAPTION, MSG_REFLECTION, MSG_PAIN,
     MSG_OFFER_1, MSG_OFFER_2, MSG_COST_OF_WAITING, MSG_OFFER_3, MSG_FOLLOWUP,
+    MSG_FOLLOWUP_DAY1, MSG_FOLLOWUP_DAY3,
     MSG_PAYMENT_CHOOSE, MSG_PAYMENT_CRYPTO_CHOOSE, MSG_PAYMENT_CRYPTO_MANUAL,
     MSG_PAYMENT_SUCCESS, MSG_PAYMENT_ALREADY,
     MSG_SUPPORT
@@ -224,6 +225,22 @@ async def send_sales_sequence(user_id: int, context: ContextTypes.DEFAULT_TYPE):
         name=f"offer_followup_{user_id}"
     )
 
+    # Догрівочна серія — день 1 і день 3, якщо досі не оплатив
+    context.job_queue.run_once(
+        scheduled_followup_day1,
+        when=86400,
+        chat_id=user_id,
+        user_id=user_id,
+        name=f"followup_day1_{user_id}"
+    )
+    context.job_queue.run_once(
+        scheduled_followup_day3,
+        when=86400 * 3,
+        chat_id=user_id,
+        user_id=user_id,
+        name=f"followup_day3_{user_id}"
+    )
+
 
 async def scheduled_offer_followup(context: ContextTypes.DEFAULT_TYPE):
     user_id = context.job.user_id
@@ -235,6 +252,36 @@ async def scheduled_offer_followup(context: ContextTypes.DEFAULT_TYPE):
     await context.bot.send_message(
         chat_id=user_id,
         text=MSG_FOLLOWUP,
+        reply_markup=keyboard,
+        parse_mode="HTML"
+    )
+
+
+async def scheduled_followup_day1(context: ContextTypes.DEFAULT_TYPE):
+    user_id = context.job.user_id
+    if db.is_paid(user_id):
+        return
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("💳 Купить протокол — $39", callback_data="buy_course")
+    ]])
+    await context.bot.send_message(
+        chat_id=user_id,
+        text=MSG_FOLLOWUP_DAY1,
+        reply_markup=keyboard,
+        parse_mode="HTML"
+    )
+
+
+async def scheduled_followup_day3(context: ContextTypes.DEFAULT_TYPE):
+    user_id = context.job.user_id
+    if db.is_paid(user_id):
+        return
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("💳 Купить протокол — $39", callback_data="buy_course")
+    ]])
+    await context.bot.send_message(
+        chat_id=user_id,
+        text=MSG_FOLLOWUP_DAY3,
         reply_markup=keyboard,
         parse_mode="HTML"
     )
