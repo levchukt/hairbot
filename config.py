@@ -23,7 +23,7 @@ CRYPTOBOT_API_URL = os.getenv("CRYPTOBOT_API_URL", "https://pay.crypt.bot/api")
 
 # Course
 COURSE_NAME = "ПОЛНЫЙ ПРОТОКОЛ ВОССТАНОВЛЕНИЯ ВОЛОС"
-COURSE_PRICE_USD = 1
+COURSE_PRICE_USD = 39
 
 # Follow-up після офера, якщо людина не оплатила (секунди). За замовчуванням 45 хв.
 OFFER_FOLLOWUP_DELAY_SECONDS = int(os.getenv("OFFER_FOLLOWUP_DELAY_SECONDS", "2700"))
