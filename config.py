@@ -23,4 +23,4 @@ CRYPTOBOT_API_URL = os.getenv("CRYPTOBOT_API_URL", "https://pay.crypt.bot/api")
 
 # Course
 COURSE_NAME = "ПОЛНЫЙ ПРОТОКОЛ ВОССТАНОВЛЕНИЯ ВОЛОС"
-COURSE_PRICE_USD = 1
+COURSE_PRICE_USD = 39
