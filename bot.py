@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import time
 import asyncio
+import re
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -36,6 +37,11 @@ logger = logging.getLogger(__name__)
 
 db = Database()
 
+# Дозволені символи для джерела трафіку (?start=...).
+# Будь-який новий тег (reel01, dht, cortisol...) працює без правок коду —
+# і водночас фільтрує сміття/спецсимволи перед записом у БД.
+SOURCE_RE = re.compile(r'^[a-z0-9_]{1,20}$')
+
 
 # ─────────────────────────────────────────────
 #  /start
@@ -47,7 +53,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     source = "direct"
     if context.args:
         raw = context.args[0].lower()
-        if raw in ("ig1", "ig2", "ig3"):
+        if SOURCE_RE.match(raw):
             source = raw
 
     is_new = not db.user_exists(user.id)
