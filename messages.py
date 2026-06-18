@@ -134,4 +134,4 @@ MSG_PAYMENT_ALREADY = """У тебя уже есть доступ. Отправ�
 
 MSG_SUPPORT = """Напиши — разберёмся.
 
-👉 @your_support_username"""
+👉 @hairowner"""
