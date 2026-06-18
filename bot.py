@@ -20,8 +20,9 @@ from config import (
     CRYPTOBOT_API_TOKEN, CRYPTOBOT_API_URL
 )
 from messages import (
-    MSG_WELCOME, MSG_GUIDE_CAPTION, MSG_PAIN, MSG_OFFER,
-    MSG_PAYMENT_CHOOSE, MSG_PAYMENT_CRYPTO,
+    MSG_WELCOME, MSG_GUIDE_CAPTION, MSG_PAIN,
+    MSG_OFFER_1, MSG_OFFER_2, MSG_OFFER_3,
+    MSG_PAYMENT_CHOOSE, MSG_PAYMENT_CRYPTO_CHOOSE, MSG_PAYMENT_CRYPTO_MANUAL,
     MSG_PAYMENT_SUCCESS, MSG_PAYMENT_ALREADY,
     MSG_SUPPORT
 )
@@ -185,12 +186,18 @@ async def send_sales_sequence(user_id: int, context: ContextTypes.DEFAULT_TYPE):
     await context.bot.send_message(chat_id=user_id, text=MSG_PAIN, parse_mode="HTML")
     await asyncio.sleep(8)
 
+    await context.bot.send_message(chat_id=user_id, text=MSG_OFFER_1, parse_mode="HTML")
+    await asyncio.sleep(4)
+
+    await context.bot.send_message(chat_id=user_id, text=MSG_OFFER_2, parse_mode="HTML")
+    await asyncio.sleep(4)
+
     keyboard = InlineKeyboardMarkup([[
         InlineKeyboardButton("💳 Купить протокол — $39", callback_data="buy_course")
     ]])
     await context.bot.send_message(
         chat_id=user_id,
-        text=MSG_OFFER,
+        text=MSG_OFFER_3,
         reply_markup=keyboard,
         parse_mode="HTML"
     )
@@ -212,7 +219,7 @@ async def buy_course(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("Оплатить картой", callback_data="pay_wayforpay")],
-        [InlineKeyboardButton("₿ Оплатить криптой", callback_data="pay_crypto")],
+        [InlineKeyboardButton("₿ Оплатить криптой", callback_data="crypto_menu")],
         [InlineKeyboardButton("❓ Вопрос / помощь", callback_data="support")],
     ])
     await query.message.reply_text(
@@ -245,6 +252,22 @@ async def pay_wayforpay(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def crypto_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("⚡ Быстро через CryptoBot", callback_data="pay_crypto_auto")],
+        [InlineKeyboardButton("📋 Перевести вручную", callback_data="pay_crypto_manual")],
+        [InlineKeyboardButton("❓ Вопрос / помощь", callback_data="support")],
+    ])
+    await query.message.reply_text(
+        MSG_PAYMENT_CRYPTO_CHOOSE,
+        reply_markup=keyboard,
+        parse_mode="HTML"
+    )
+
+
 async def create_cryptobot_invoice(user_id: int) -> str | None:
     """Створює інвойс у CryptoBot, повертає посилання на оплату."""
     async with aiohttp.ClientSession() as session:
@@ -267,7 +290,7 @@ async def create_cryptobot_invoice(user_id: int) -> str | None:
             return None
 
 
-async def pay_crypto(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def pay_crypto_auto(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
@@ -275,7 +298,7 @@ async def pay_crypto(update: Update, context: ContextTypes.DEFAULT_TYPE):
     invoice_url = await create_cryptobot_invoice(user_id)
     if not invoice_url:
         await query.message.reply_text(
-            "⚠️ Не удалось создать счёт. Попробуй ещё раз или напиши /support",
+            "⚠️ Не удалось создать счёт. Попробуй «Перевести вручную» или напиши /support",
             parse_mode="HTML"
         )
         return
@@ -285,13 +308,52 @@ async def pay_crypto(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("✅ Я оплатил", callback_data="check_payment")],
     ])
     await query.message.reply_text(
-        f"<b>Оплата криптовалютой</b>\n\n"
+        f"<b>Оплата через CryptoBot</b>\n\n"
         f"Сумма: <b>${COURSE_PRICE_USD}</b> (в USDT)\n\n"
         f"Перейди к оплате и после успешной оплаты вернись сюда и нажми «Я оплатил».\n\n"
         f"⚡️ Доступ откроется автоматически после подтверждения.",
         reply_markup=keyboard,
         parse_mode="HTML"
     )
+
+
+async def pay_crypto_manual(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Я отправил", callback_data="crypto_manual_sent")],
+        [InlineKeyboardButton("❓ Нужна помощь", callback_data="support")],
+    ])
+    await query.message.reply_text(
+        MSG_PAYMENT_CRYPTO_MANUAL.format(
+            amount=COURSE_PRICE_USD,
+            btc=CRYPTO_WALLET_BTC,
+            usdt=CRYPTO_WALLET_USDT,
+        ),
+        reply_markup=keyboard,
+        parse_mode="HTML"
+    )
+
+
+async def crypto_manual_sent(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
+    username = query.from_user.username or str(user_id)
+
+    await query.message.reply_text(
+        "✅ Принято! Проверим транзакцию и откроем доступ в течение <b>1–2 часов</b>.\n\n"
+        "Если вопросы — напиши /support",
+        parse_mode="HTML"
+    )
+    if ADMIN_ID:
+        await context.bot.send_message(
+            chat_id=ADMIN_ID,
+            text=f"🔔 <b>Ручная крипто-оплата от @{username}</b> (ID: {user_id})\n"
+                 f"Используй /approve {user_id} для выдачи доступа.",
+            parse_mode="HTML"
+        )
 
 
 async def check_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -567,7 +629,10 @@ async def main():
     app.add_handler(CallbackQueryHandler(guide_read_callback, pattern="^guide_read$"))
     app.add_handler(CallbackQueryHandler(buy_course, pattern="^buy_course$"))
     app.add_handler(CallbackQueryHandler(pay_wayforpay, pattern="^pay_wayforpay$"))
-    app.add_handler(CallbackQueryHandler(pay_crypto, pattern="^pay_crypto$"))
+    app.add_handler(CallbackQueryHandler(crypto_menu, pattern="^crypto_menu$"))
+    app.add_handler(CallbackQueryHandler(pay_crypto_auto, pattern="^pay_crypto_auto$"))
+    app.add_handler(CallbackQueryHandler(pay_crypto_manual, pattern="^pay_crypto_manual$"))
+    app.add_handler(CallbackQueryHandler(crypto_manual_sent, pattern="^crypto_manual_sent$"))
     app.add_handler(CallbackQueryHandler(check_payment, pattern="^check_payment$"))
     app.add_handler(CallbackQueryHandler(support_callback, pattern="^support$"))
 
