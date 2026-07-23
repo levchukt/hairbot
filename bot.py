@@ -58,6 +58,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     is_new = not db.user_exists(user.id)
     db.add_user(user.id, user.username, user.first_name, source=source)
+    db.log_event(user.id, "start")
 
     if not is_new:
         # Повторний /start — просто нагадуємо
@@ -148,6 +149,8 @@ async def send_guide(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     # Страховка — через 24 год якщо кнопку не натиснули
+    db.log_event(user_id, "guide_sent")
+
     context.job_queue.run_once(
         scheduled_sales_fallback,
         when=86400,
@@ -167,6 +170,7 @@ async def guide_read_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     user_id = query.from_user.id
 
     await query.edit_message_reply_markup(reply_markup=None)
+    db.log_event(user_id, "guide_read")
 
     # Якщо вже отримав оффер або купив — не надсилаємо повторно
     if db.has_offer_sent(user_id) or db.is_paid(user_id):
@@ -189,6 +193,7 @@ async def scheduled_sales_fallback(context: ContextTypes.DEFAULT_TYPE):
 
 async def send_sales_sequence(user_id: int, context: ContextTypes.DEFAULT_TYPE):
     db.mark_offer_sent(user_id)
+    db.log_event(user_id, "offer_sent")
 
     await context.bot.send_message(chat_id=user_id, text=MSG_PAIN, parse_mode="HTML")
     await asyncio.sleep(10)
@@ -233,6 +238,7 @@ async def scheduled_offer_followup(context: ContextTypes.DEFAULT_TYPE):
     user_id = context.job.user_id
     if db.is_paid(user_id):
         return
+    db.log_event(user_id, "followup_1h")
     keyboard = InlineKeyboardMarkup([[
         InlineKeyboardButton("Открыть полный протокол", callback_data="buy_course")
     ]])
@@ -248,8 +254,9 @@ async def scheduled_followup_day1(context: ContextTypes.DEFAULT_TYPE):
     user_id = context.job.user_id
     if db.is_paid(user_id):
         return
+    db.log_event(user_id, "followup_day1")
     keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton("💳 Купить протокол — $39", callback_data="buy_course")
+        InlineKeyboardButton(f"💳 Купить протокол — ${COURSE_PRICE_USD}", callback_data="buy_course")
     ]])
     await context.bot.send_message(
         chat_id=user_id,
@@ -263,8 +270,9 @@ async def scheduled_followup_day3(context: ContextTypes.DEFAULT_TYPE):
     user_id = context.job.user_id
     if db.is_paid(user_id):
         return
+    db.log_event(user_id, "followup_day3")
     keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton("💳 Купить протокол — $39", callback_data="buy_course")
+        InlineKeyboardButton(f"💳 Купить протокол — ${COURSE_PRICE_USD}", callback_data="buy_course")
     ]])
     await context.bot.send_message(
         chat_id=user_id,
@@ -282,6 +290,7 @@ async def buy_course(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
+    db.log_event(user_id, "buy_click")
 
     if db.is_paid(user_id):
         await query.message.reply_text(MSG_PAYMENT_ALREADY, parse_mode="HTML")
@@ -304,6 +313,7 @@ async def pay_wayforpay(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
+    db.log_event(user_id, "pay_card_click")
 
     # Посилання на наш сервер який робить POST-редирект на WayForPay
     base_url = os.getenv("RAILWAY_PUBLIC_URL", f"http://localhost:{os.getenv('PORT', 8080)}")
@@ -326,6 +336,7 @@ async def pay_wayforpay(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def crypto_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    db.log_event(query.from_user.id, "pay_crypto_click")
 
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("⚡ Быстро через CryptoBot", callback_data="pay_crypto_auto")],
@@ -365,6 +376,7 @@ async def pay_crypto_auto(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
+    db.log_event(user_id, "crypto_auto_invoice")
 
     invoice_url = await create_cryptobot_invoice(user_id)
     if not invoice_url:
@@ -391,6 +403,7 @@ async def pay_crypto_auto(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def pay_crypto_manual(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    db.log_event(query.from_user.id, "crypto_manual_open")
 
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("✅ Я отправил", callback_data="crypto_manual_sent")],
@@ -410,6 +423,7 @@ async def pay_crypto_manual(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def crypto_manual_sent(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    db.log_event(query.from_user.id, "crypto_manual_declared")
     user_id = query.from_user.id
     username = query.from_user.username or str(user_id)
 
@@ -431,6 +445,7 @@ async def check_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
+    db.log_event(user_id, "check_payment_click")
 
     if db.is_paid(user_id):
         await query.message.reply_text(MSG_PAYMENT_SUCCESS, parse_mode="HTML")
@@ -471,24 +486,100 @@ async def admin_approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Использование: /approve USER_ID")
 
 
+FUNNEL_STEPS = [
+    ("start",      "Запустили бота"),
+    ("guide_sent", "Получили гайд"),
+    ("guide_read", "Нажали «Прочитал»"),
+    ("offer_sent", "Увидели оффер"),
+    ("buy_click",  "Нажали «Купить»"),
+    ("paid",       "Оплатили"),
+]
+
+SOURCE_LABELS = {"ig1": "Instagram 1", "ig2": "Instagram 2", "ig3": "Instagram 3", "direct": "Прямой вход"}
+
+
+def _bar(pct: float, width: int = 10) -> str:
+    filled = int(round(pct / 100 * width))
+    return "\u2588" * filled + "\u2591" * (width - filled)
+
+
+def _build_funnel_text(counts: dict) -> str:
+    base = counts.get("start", 0)
+    lines = []
+    prev = None
+    for key, label in FUNNEL_STEPS:
+        n = counts.get(key, 0)
+        pct = (n / base * 100) if base else 0
+        drop = ""
+        if prev is not None and prev > 0 and n < prev:
+            drop = f"  <i>\u2212{prev - n}</i>"
+        lines.append(f"{_bar(pct)} <b>{n}</b> \u00b7 {pct:.0f}%  {label}{drop}")
+        prev = n
+    return "\n".join(lines)
+
+
 async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if str(update.effective_user.id) != str(ADMIN_ID):
         return
 
     stats = db.get_stats()
-    source_labels = {"ig1": "Instagram 1", "ig2": "Instagram 2", "ig3": "Instagram 3", "direct": "Прямой вход"}
+    counts = db.event_counts()
+    stuck = db.stuck_users()
+
     source_lines = ""
     for s in stats["sources"]:
-        label = source_labels.get(s["source"], s["source"])
+        label = SOURCE_LABELS.get(s["source"], s["source"])
         conv = (s["paid"] / s["total"] * 100) if s["total"] else 0
-        source_lines += f"\n  {label}: {s['total']} чел. / {s['paid']} оплат ({conv:.1f}%)"
+        source_lines += f"\n  {label}: {s['total']} \u2192 {s['paid']} оплат ({conv:.1f}%)"
 
-    await update.message.reply_text(
-        f"📊 <b>Статистика бота</b>\n\n"
+    text = (
+        f"📊 <b>ВОРОНКА</b>\n\n"
+        f"{_build_funnel_text(counts)}\n\n"
+        f"━━━━━━━━━━━━━━━\n\n"
+        f"🔴 <b>ГДЕ ЗАСТРЕВАЮТ</b>\n\n"
+        f"Получили гайд, не открыли: <b>{stuck['guide_not_read']}</b>\n"
+        f"Увидели оффер, не кликнули: <b>{stuck['offer_no_click']}</b>\n"
+        f"Кликнули, не выбрали оплату: <b>{stuck['buy_no_method']}</b>\n"
+        f"Выбрали оплату, не заплатили: <b>{stuck['method_no_pay']}</b>\n"
+        f"Кликнули «Купить», не купили: <b>{stuck['buy_no_pay']}</b>\n\n"
+        f"━━━━━━━━━━━━━━━\n\n"
+        f"💳 <b>СПОСОБЫ ОПЛАТЫ</b>\n\n"
+        f"Выбрали карту: <b>{counts.get('pay_card_click', 0)}</b>\n"
+        f"  \u2192 дошли до страницы: <b>{counts.get('pay_page_open', 0)}</b>\n"
+        f"Выбрали крипту: <b>{counts.get('pay_crypto_click', 0)}</b>\n"
+        f"  \u2192 CryptoBot: <b>{counts.get('crypto_auto_invoice', 0)}</b>\n"
+        f"  \u2192 вручную: <b>{counts.get('crypto_manual_open', 0)}</b>\n"
+        f"Нажали «Я оплатил»: <b>{counts.get('check_payment_click', 0)}</b>\n\n"
+        f"━━━━━━━━━━━━━━━\n\n"
+        f"📬 <b>ДОГРЕВЫ</b>\n\n"
+        f"Через час: <b>{counts.get('followup_1h', 0)}</b>\n"
+        f"День 1: <b>{counts.get('followup_day1', 0)}</b>\n"
+        f"День 3: <b>{counts.get('followup_day3', 0)}</b>\n\n"
+        f"━━━━━━━━━━━━━━━\n\n"
+        f"🌐 <b>ИСТОЧНИКИ</b>{source_lines}\n\n"
+        f"━━━━━━━━━━━━━━━\n\n"
         f"👥 Всего: <b>{stats['total_users']}</b>\n"
         f"💰 Оплатили: <b>{stats['paid_users']}</b>\n"
-        f"📈 Конверсия: <b>{stats['conversion']:.1f}%</b>\n\n"
-        f"<b>По источникам:</b>{source_lines}",
+        f"📈 Конверсия: <b>{stats['conversion']:.1f}%</b>"
+    )
+    await update.message.reply_text(text, parse_mode="HTML")
+
+
+async def admin_funnel_source(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/funnel ig1 — воронка по конкретному джерелу."""
+    if str(update.effective_user.id) != str(ADMIN_ID):
+        return
+    if not context.args:
+        await update.message.reply_text("Использование: /funnel ig1")
+        return
+    source = context.args[0].lower()
+    counts = db.event_counts(source=source)
+    label = SOURCE_LABELS.get(source, source)
+    if not counts:
+        await update.message.reply_text(f"По источнику «{label}» данных пока нет.")
+        return
+    await update.message.reply_text(
+        f"📊 <b>ВОРОНКА — {label}</b>\n\n{_build_funnel_text(counts)}",
         parse_mode="HTML"
     )
 
@@ -580,6 +671,7 @@ async def wayforpay_redirect(request: web.Request) -> web.Response:
     except (KeyError, ValueError):
         return web.Response(status=400, text="Bad user_id")
     html = generate_wayforpay_html(user_id)
+    db.log_event(user_id, "pay_page_open")
     return web.Response(text=html, content_type="text/html")
 
 
@@ -697,6 +789,7 @@ async def main():
     app.add_handler(CommandHandler("support", support_command))
     app.add_handler(CommandHandler("approve", admin_approve))
     app.add_handler(CommandHandler("stats", admin_stats))
+    app.add_handler(CommandHandler("funnel", admin_funnel_source))
     app.add_handler(CallbackQueryHandler(guide_read_callback, pattern="^guide_read$"))
     app.add_handler(CallbackQueryHandler(buy_course, pattern="^buy_course$"))
     app.add_handler(CallbackQueryHandler(pay_wayforpay, pattern="^pay_wayforpay$"))

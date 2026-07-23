@@ -40,7 +40,84 @@ class Database:
                     conn.execute(f"ALTER TABLE users ADD COLUMN {col} {definition}")
                 except Exception:
                     pass
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS events (
+                    user_id    INTEGER NOT NULL,
+                    event      TEXT NOT NULL,
+                    source     TEXT DEFAULT 'direct',
+                    created_at TEXT,
+                    UNIQUE(user_id, event)
+                )
+            """)
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_events_event ON events(event)")
             conn.commit()
+
+    # ─────────────────────────────────────────
+    #  EVENTS / ВОРОНКА
+    # ─────────────────────────────────────────
+
+    def log_event(self, user_id: int, event: str):
+        """Фіксує крок воронки. Один запис на користувача+подію."""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT source FROM users WHERE user_id = ?", (user_id,)
+            ).fetchone()
+            source = row[0] if row and row[0] else "direct"
+            conn.execute("""
+                INSERT OR IGNORE INTO events (user_id, event, source, created_at)
+                VALUES (?, ?, ?, ?)
+            """, (user_id, event, source, datetime.utcnow().isoformat()))
+            conn.commit()
+
+    def event_counts(self, source: Optional[str] = None) -> dict:
+        with self._conn() as conn:
+            if source:
+                rows = conn.execute(
+                    "SELECT event, COUNT(*) FROM events WHERE source = ? GROUP BY event",
+                    (source,)
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT event, COUNT(*) FROM events GROUP BY event"
+                ).fetchall()
+        return {r[0]: r[1] for r in rows}
+
+    def stuck_users(self) -> dict:
+        """Скільки дійшло до етапу, але не пішло далі."""
+        with self._conn() as conn:
+            def q(sql):
+                return conn.execute(sql).fetchone()[0]
+
+            return {
+                "guide_not_read": q("""
+                    SELECT COUNT(*) FROM events e
+                    WHERE e.event = 'guide_sent'
+                      AND NOT EXISTS (SELECT 1 FROM events x WHERE x.user_id = e.user_id AND x.event = 'guide_read')
+                """),
+                "offer_no_click": q("""
+                    SELECT COUNT(*) FROM events e
+                    WHERE e.event = 'offer_sent'
+                      AND NOT EXISTS (SELECT 1 FROM events x WHERE x.user_id = e.user_id AND x.event = 'buy_click')
+                """),
+                "buy_no_method": q("""
+                    SELECT COUNT(*) FROM events e
+                    WHERE e.event = 'buy_click'
+                      AND NOT EXISTS (
+                          SELECT 1 FROM events x WHERE x.user_id = e.user_id
+                          AND x.event IN ('pay_card_click','pay_crypto_click')
+                      )
+                """),
+                "method_no_pay": q("""
+                    SELECT COUNT(DISTINCT e.user_id) FROM events e
+                    WHERE e.event IN ('pay_card_click','pay_crypto_click')
+                      AND NOT EXISTS (SELECT 1 FROM events x WHERE x.user_id = e.user_id AND x.event = 'paid')
+                """),
+                "buy_no_pay": q("""
+                    SELECT COUNT(*) FROM events e
+                    WHERE e.event = 'buy_click'
+                      AND NOT EXISTS (SELECT 1 FROM events x WHERE x.user_id = e.user_id AND x.event = 'paid')
+                """),
+            }
 
     def add_user(self, user_id: int, username: Optional[str], first_name: Optional[str], source: str = "direct"):
         with self._conn() as conn:
@@ -69,6 +146,7 @@ class Database:
                 WHERE user_id = ?
             """, (datetime.utcnow().isoformat(), method, user_id))
             conn.commit()
+        self.log_event(user_id, "paid")
 
     def mark_offer_sent(self, user_id: int):
         with self._conn() as conn:
