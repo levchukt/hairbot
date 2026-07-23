@@ -191,7 +191,7 @@ async def send_sales_sequence(user_id: int, context: ContextTypes.DEFAULT_TYPE):
     db.mark_offer_sent(user_id)
 
     await context.bot.send_message(chat_id=user_id, text=MSG_PAIN, parse_mode="HTML")
-    await asyncio.sleep(25)
+    await asyncio.sleep(10)
 
     keyboard = InlineKeyboardMarkup([[
         InlineKeyboardButton(f"💳 Купить протокол — ${COURSE_PRICE_USD}", callback_data="buy_course")
