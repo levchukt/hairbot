@@ -1,11 +1,17 @@
+import os
 import sqlite3
 from datetime import datetime
 from typing import Optional
 
+DB_PATH = os.getenv("DB_PATH", "bot.db")
+
 
 class Database:
-    def __init__(self, db_path: str = "bot.db"):
-        self.db_path = db_path
+    def __init__(self, db_path: Optional[str] = None):
+        self.db_path = db_path or DB_PATH
+        parent = os.path.dirname(self.db_path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
         self._init()
 
     def _conn(self):

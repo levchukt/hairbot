@@ -21,8 +21,7 @@ from config import (
     CRYPTOBOT_API_TOKEN, CRYPTOBOT_API_URL, OFFER_FOLLOWUP_DELAY_SECONDS
 )
 from messages import (
-    MSG_WELCOME, MSG_GUIDE_CAPTION, MSG_REFLECTION, MSG_PAIN,
-    MSG_OFFER_1, MSG_OFFER_2, MSG_COST_OF_WAITING, MSG_OFFER_3, MSG_FOLLOWUP,
+    MSG_WELCOME, MSG_GUIDE_CAPTION, MSG_PAIN, MSG_OFFER, MSG_FOLLOWUP,
     MSG_FOLLOWUP_DAY1, MSG_FOLLOWUP_DAY3,
     MSG_PAYMENT_CHOOSE, MSG_PAYMENT_CRYPTO_CHOOSE, MSG_PAYMENT_CRYPTO_MANUAL,
     MSG_PAYMENT_SUCCESS, MSG_PAYMENT_ALREADY,
@@ -191,26 +190,15 @@ async def scheduled_sales_fallback(context: ContextTypes.DEFAULT_TYPE):
 async def send_sales_sequence(user_id: int, context: ContextTypes.DEFAULT_TYPE):
     db.mark_offer_sent(user_id)
 
-    await context.bot.send_message(chat_id=user_id, text=MSG_REFLECTION, parse_mode="HTML")
-    await asyncio.sleep(5)
-
     await context.bot.send_message(chat_id=user_id, text=MSG_PAIN, parse_mode="HTML")
-    await asyncio.sleep(8)
-
-    await context.bot.send_message(chat_id=user_id, text=MSG_OFFER_1, parse_mode="HTML")
-    await asyncio.sleep(4)
-
-    await context.bot.send_message(chat_id=user_id, text=MSG_OFFER_2, parse_mode="HTML")
-    await asyncio.sleep(4)
-
-    await context.bot.send_message(chat_id=user_id, text=MSG_COST_OF_WAITING, parse_mode="HTML")
-    await asyncio.sleep(4)
+    await asyncio.sleep(25)
 
     keyboard = InlineKeyboardMarkup([[
-InlineKeyboardButton(f"💳 Купить протокол — ${COURSE_PRICE_USD}", callback_data="buy_course")    ]])
+        InlineKeyboardButton(f"💳 Купить протокол — ${COURSE_PRICE_USD}", callback_data="buy_course")
+    ]])
     await context.bot.send_message(
         chat_id=user_id,
-        text=MSG_OFFER_3,
+        text=MSG_OFFER,
         reply_markup=keyboard,
         parse_mode="HTML"
     )
