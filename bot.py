@@ -67,7 +67,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await send_course_access(user.id, context)
         else:
             keyboard = InlineKeyboardMarkup([[
-                InlineKeyboardButton("💳 Открыть полный протокол — $39", callback_data="buy_course")
+                InlineKeyboardButton(f"💳 Открыть полный протокол — ${COURSE_PRICE_USD}", callback_data="buy_course")
             ]])
             await update.message.reply_text(
                 "Гайд ты уже получил 👆\n\nГотов перейти к полному протоколу?",
@@ -207,8 +207,7 @@ async def send_sales_sequence(user_id: int, context: ContextTypes.DEFAULT_TYPE):
     await asyncio.sleep(4)
 
     keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton("💳 Купить протокол — $39", callback_data="buy_course")
-    ]])
+InlineKeyboardButton(f"💳 Купить протокол — ${COURSE_PRICE_USD}", callback_data="buy_course")    ]])
     await context.bot.send_message(
         chat_id=user_id,
         text=MSG_OFFER_3,
