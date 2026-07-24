@@ -149,6 +149,22 @@ class Database:
             conn.commit()
         self.log_event(user_id, "paid")
 
+    def hot_leads(self) -> list:
+        """Натиснули «Купить», але не оплатили. Найтепліші люди в базі."""
+        with self._conn() as conn:
+            rows = conn.execute("""
+                SELECT u.user_id, u.username, u.first_name, u.source, e.created_at
+                FROM events e
+                JOIN users u ON u.user_id = e.user_id
+                WHERE e.event = 'buy_click' AND u.paid = 0
+                ORDER BY e.created_at DESC
+            """).fetchall()
+        return [
+            {"user_id": r[0], "username": r[1], "first_name": r[2],
+             "source": r[3], "at": r[4]}
+            for r in rows
+        ]
+
     def get_source(self, user_id: int) -> str:
         with self._conn() as conn:
             row = conn.execute(

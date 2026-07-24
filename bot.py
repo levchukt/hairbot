@@ -322,11 +322,13 @@ def _payment_keyboard(user_id: int) -> list:
         f"⭐ Оплатить звёздами — {STARS_PRICE}", callback_data="pay_stars"
     )]
     crypto_btn = [InlineKeyboardButton("₿ Оплатить криптой", callback_data="crypto_menu")]
-    card_btn = [InlineKeyboardButton("💳 Оплатить картой", callback_data="pay_wayforpay")]
+    card_btn = [InlineKeyboardButton("💳 Visa / Mastercard", callback_data="pay_wayforpay")]
     help_btn = [InlineKeyboardButton("❓ Вопрос / помощь", callback_data="support")]
 
+    # Для ru-джерел картка йде останньою: вона працює лише для карт,
+    # випущених поза РФ, тож першими мають бути робочі способи.
     if _is_ru_traffic(user_id):
-        return [stars_btn, crypto_btn, help_btn]
+        return [stars_btn, crypto_btn, card_btn, help_btn]
     return [card_btn, stars_btn, crypto_btn, help_btn]
 
 
@@ -632,6 +634,82 @@ async def admin_refund(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     except Exception:
         pass
+
+
+async def admin_leads(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/leads — хто натиснув «Купить», але не оплатив."""
+    if str(update.effective_user.id) != str(ADMIN_ID):
+        return
+
+    leads = db.hot_leads()
+    if not leads:
+        await update.message.reply_text("Тёплых лидов пока нет.")
+        return
+
+    lines = []
+    for l in leads[:25]:
+        name = l["first_name"] or "без имени"
+        uname = f"@{l['username']}" if l["username"] else "без username"
+        at = (l["at"] or "")[:16].replace("T", " ")
+        lines.append(
+            f"<b>{name}</b> · {uname}\n"
+            f"  {l['source']} · {at}\n"
+            f"  <code>/dm {l['user_id']} </code>"
+        )
+
+    tail = f"\n\n<i>Показано 25 з {len(leads)}.</i>" if len(leads) > 25 else ""
+    await update.message.reply_text(
+        f"🔥 <b>НАТИСНУЛИ «КУПИТЬ», НЕ ОПЛАТИЛИ</b> — {len(leads)}\n\n"
+        + "\n\n".join(lines)
+        + tail
+        + "\n\nТапни на <code>/dm ...</code> щоб скопіювати, допиши текст і надішли.",
+        parse_mode="HTML"
+    )
+
+
+async def admin_dm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/dm USER_ID текст — написати людині від імені бота.
+    Особисто ти написати не зможеш, якщо в неї нема @username — а бот зможе."""
+    if str(update.effective_user.id) != str(ADMIN_ID):
+        return
+    if len(context.args) < 2:
+        await update.message.reply_text("Использование: /dm USER_ID текст сообщения")
+        return
+    try:
+        target_id = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("USER_ID має бути числом.")
+        return
+
+    text = " ".join(context.args[1:])
+    try:
+        await context.bot.send_message(chat_id=target_id, text=text)
+    except Exception as e:
+        await update.message.reply_text(f"❌ Не доставлено ({target_id}): {e}")
+        return
+    await update.message.reply_text(f"✅ Надіслано {target_id}")
+
+
+async def relay_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Будь-який текст від користувача → в адмінку.
+    Без цього питання людей просто зникають, а це найтепліші люди в базі."""
+    user = update.effective_user
+    if ADMIN_ID and str(user.id) == str(ADMIN_ID):
+        return
+
+    db.log_event(user.id, "user_wrote")
+    await update.message.reply_text("Принял. Отвечу лично — обычно в течение нескольких часов.")
+
+    if ADMIN_ID:
+        uname = f"@{user.username}" if user.username else "без username"
+        paid = "оплатив" if db.is_paid(user.id) else "не оплатив"
+        await context.bot.send_message(
+            chat_id=ADMIN_ID,
+            text=f"💬 <b>Пише {user.first_name}</b> ({uname}) · {paid}\n\n"
+                 f"{update.message.text}\n\n"
+                 f"Відповісти: <code>/dm {user.id} </code>",
+            parse_mode="HTML"
+        )
 
 
 FUNNEL_STEPS = [
@@ -941,6 +1019,8 @@ async def main():
     app.add_handler(CommandHandler("stats", admin_stats))
     app.add_handler(CommandHandler("funnel", admin_funnel_source))
     app.add_handler(CommandHandler("refund", admin_refund))
+    app.add_handler(CommandHandler("leads", admin_leads))
+    app.add_handler(CommandHandler("dm", admin_dm))
     app.add_handler(CallbackQueryHandler(guide_read_callback, pattern="^guide_read$"))
     app.add_handler(CallbackQueryHandler(buy_course, pattern="^buy_course$"))
     app.add_handler(CallbackQueryHandler(pay_wayforpay, pattern="^pay_wayforpay$"))
@@ -953,6 +1033,8 @@ async def main():
     app.add_handler(CallbackQueryHandler(crypto_manual_sent, pattern="^crypto_manual_sent$"))
     app.add_handler(CallbackQueryHandler(check_payment, pattern="^check_payment$"))
     app.add_handler(CallbackQueryHandler(support_callback, pattern="^support$"))
+    # Останнім: ловить усе, що не команда і не платіж
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, relay_user_message))
 
     web_app = web.Application()
     web_app["bot_app"] = app
