@@ -28,7 +28,7 @@ from messages import (
     MSG_WELCOME, MSG_GUIDE_CAPTION, MSG_PAIN, MSG_OFFER, MSG_FOLLOWUP,
     MSG_FOLLOWUP_DAY1, MSG_FOLLOWUP_DAY3,
     MSG_PAYMENT_CHOOSE, MSG_PAYMENT_CRYPTO_CHOOSE, MSG_PAYMENT_CRYPTO_MANUAL,
-    MSG_PAYMENT_STARS, MSG_PAYMENT_CRYPTO_AUTO,
+    MSG_PAYMENT_STARS, MSG_PAYMENT_STARS_SHOP, MSG_PAYMENT_CRYPTO_AUTO,
     MSG_PAYMENT_SUCCESS, MSG_PAYMENT_ALREADY,
     MSG_SUPPORT
 )
@@ -369,13 +369,15 @@ async def pay_stars(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_course_access(user_id, context)
         return
 
+    text = MSG_PAYMENT_STARS.format(stars=STARS_PRICE)
     buttons = []
     if STARS_SHOP_URL:
+        text += MSG_PAYMENT_STARS_SHOP
         buttons.append([InlineKeyboardButton("Купить звёзды за рубли", url=STARS_SHOP_URL)])
     buttons.append([InlineKeyboardButton("❓ Вопрос / помощь", callback_data="support")])
 
     await query.message.reply_text(
-        MSG_PAYMENT_STARS.format(stars=STARS_PRICE),
+        text,
         reply_markup=InlineKeyboardMarkup(buttons),
         parse_mode="HTML"
     )
