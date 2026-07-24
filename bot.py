@@ -672,16 +672,19 @@ async def admin_dm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     Особисто ти написати не зможеш, якщо в неї нема @username — а бот зможе."""
     if str(update.effective_user.id) != str(ADMIN_ID):
         return
-    if len(context.args) < 2:
+    # Беремо сирий текст, а не context.args — інакше переноси рядків
+    # схлопуються в один абзац.
+    parts = (update.message.text or "").split(maxsplit=2)
+    if len(parts) < 3:
         await update.message.reply_text("Использование: /dm USER_ID текст сообщения")
         return
     try:
-        target_id = int(context.args[0])
+        target_id = int(parts[1])
     except ValueError:
         await update.message.reply_text("USER_ID має бути числом.")
         return
 
-    text = " ".join(context.args[1:])
+    text = parts[2]
     try:
         await context.bot.send_message(chat_id=target_id, text=text)
     except Exception as e:
