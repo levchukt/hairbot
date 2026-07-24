@@ -6,9 +6,12 @@ import time
 import asyncio
 import re
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import (
+    Update, InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice
+)
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
+    PreCheckoutQueryHandler, MessageHandler, filters,
     ContextTypes
 )
 from aiohttp import web
@@ -18,12 +21,14 @@ from config import (
     BOT_TOKEN, GUIDE_PDF_PATH, WAYFORPAY_MERCHANT_ACCOUNT,
     WAYFORPAY_MERCHANT_KEY, WAYFORPAY_DOMAIN, COURSE_PRICE_USD,
     COURSE_NAME, CRYPTO_WALLET_BTC, CRYPTO_WALLET_USDT, ADMIN_ID,
-    CRYPTOBOT_API_TOKEN, CRYPTOBOT_API_URL, OFFER_FOLLOWUP_DELAY_SECONDS
+    CRYPTOBOT_API_TOKEN, CRYPTOBOT_API_URL, OFFER_FOLLOWUP_DELAY_SECONDS,
+    STARS_PRICE, STARS_SHOP_URL, RU_SOURCE_PREFIX
 )
 from messages import (
     MSG_WELCOME, MSG_GUIDE_CAPTION, MSG_PAIN, MSG_OFFER, MSG_FOLLOWUP,
     MSG_FOLLOWUP_DAY1, MSG_FOLLOWUP_DAY3,
     MSG_PAYMENT_CHOOSE, MSG_PAYMENT_CRYPTO_CHOOSE, MSG_PAYMENT_CRYPTO_MANUAL,
+    MSG_PAYMENT_STARS, MSG_PAYMENT_CRYPTO_AUTO,
     MSG_PAYMENT_SUCCESS, MSG_PAYMENT_ALREADY,
     MSG_SUPPORT
 )
@@ -297,16 +302,32 @@ async def buy_course(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_course_access(user_id, context)
         return
 
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("Оплатить картой", callback_data="pay_wayforpay")],
-        [InlineKeyboardButton("₿ Оплатить криптой", callback_data="crypto_menu")],
-        [InlineKeyboardButton("❓ Вопрос / помощь", callback_data="support")],
-    ])
+    keyboard = InlineKeyboardMarkup(_payment_keyboard(user_id))
     await query.message.reply_text(
         MSG_PAYMENT_CHOOSE,
         reply_markup=keyboard,
         parse_mode="HTML"
     )
+
+
+def _is_ru_traffic(user_id: int) -> bool:
+    """Джерела на кшталт ru_reel01 → російський трафік.
+    Картка для них не показується: російські Visa/MC не проходять
+    міжнародний процесинг, кнопка лише зжирає конверсію."""
+    return db.get_source(user_id).startswith(RU_SOURCE_PREFIX)
+
+
+def _payment_keyboard(user_id: int) -> list:
+    stars_btn = [InlineKeyboardButton(
+        f"⭐ Оплатить звёздами — {STARS_PRICE}", callback_data="pay_stars"
+    )]
+    crypto_btn = [InlineKeyboardButton("₿ Оплатить криптой", callback_data="crypto_menu")]
+    card_btn = [InlineKeyboardButton("💳 Оплатить картой", callback_data="pay_wayforpay")]
+    help_btn = [InlineKeyboardButton("❓ Вопрос / помощь", callback_data="support")]
+
+    if _is_ru_traffic(user_id):
+        return [stars_btn, crypto_btn, help_btn]
+    return [card_btn, stars_btn, crypto_btn, help_btn]
 
 
 async def pay_wayforpay(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -333,6 +354,88 @@ async def pay_wayforpay(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+# ─────────────────────────────────────────────
+#  TELEGRAM STARS
+# ─────────────────────────────────────────────
+
+async def pay_stars(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
+    db.log_event(user_id, "pay_stars_click")
+
+    if db.is_paid(user_id):
+        await query.message.reply_text(MSG_PAYMENT_ALREADY, parse_mode="HTML")
+        await send_course_access(user_id, context)
+        return
+
+    buttons = []
+    if STARS_SHOP_URL:
+        buttons.append([InlineKeyboardButton("Купить звёзды за рубли", url=STARS_SHOP_URL)])
+    buttons.append([InlineKeyboardButton("❓ Вопрос / помощь", callback_data="support")])
+
+    await query.message.reply_text(
+        MSG_PAYMENT_STARS.format(stars=STARS_PRICE),
+        reply_markup=InlineKeyboardMarkup(buttons),
+        parse_mode="HTML"
+    )
+
+    # Для XTR provider_token не потрібен, а сума в prices — це кількість зірок
+    # напряму (без множення на 100, як у фіатних валютах).
+    await context.bot.send_invoice(
+        chat_id=user_id,
+        title=COURSE_NAME,
+        description="Полный протокол: 6 фаз, анализы, добавки, чек-листы, таймлайн.",
+        payload=f"protocol_{user_id}",
+        provider_token=None,
+        currency="XTR",
+        prices=[LabeledPrice(label=COURSE_NAME, amount=STARS_PRICE)],
+    )
+    db.log_event(user_id, "stars_invoice_sent")
+
+
+async def precheckout_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Telegram чекає відповідь до 10 секунд. Не відповіси — платіж зірветься."""
+    query = update.pre_checkout_query
+    user_id = query.from_user.id
+
+    if not query.invoice_payload.startswith("protocol_"):
+        await query.answer(ok=False, error_message="Счёт устарел. Открой оплату заново.")
+        return
+
+    if db.is_paid(user_id):
+        await query.answer(ok=False, error_message="У тебя уже есть доступ — оплата не нужна.")
+        return
+
+    await query.answer(ok=True)
+
+
+async def successful_payment_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    payment = update.message.successful_payment
+    user_id = update.effective_user.id
+
+    # Зберігаємо charge_id — без нього refundStarPayment неможливий
+    db.save_stars_charge(user_id, payment.telegram_payment_charge_id)
+    db.mark_paid(user_id, method="stars")
+    logger.info(
+        f"Stars payment: user={user_id} amount={payment.total_amount} "
+        f"charge_id={payment.telegram_payment_charge_id}"
+    )
+
+    await update.message.reply_text(MSG_PAYMENT_SUCCESS, parse_mode="HTML")
+    await send_course_access(user_id, context)
+
+    if ADMIN_ID:
+        username = update.effective_user.username or str(user_id)
+        await context.bot.send_message(
+            chat_id=ADMIN_ID,
+            text=f"⭐ <b>Оплата зірками</b> — @{username} (ID: <code>{user_id}</code>)\n"
+                 f"Сума: {payment.total_amount} XTR\n"
+                 f"Повернення: <code>/refund {user_id}</code>",
+            parse_mode="HTML"
+        )
+
+
 async def crypto_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -357,7 +460,13 @@ async def create_cryptobot_invoice(user_id: int) -> str | None:
             f"{CRYPTOBOT_API_URL}/createInvoice",
             headers={"Crypto-Pay-API-Token": CRYPTOBOT_API_TOKEN},
             json={
-                "asset": "USDT",
+                # Фіатний інвойс: курс фіксує CryptoBot на своєму боці,
+                # юзер обирає актив уже всередині оплати.
+                # Якщо API поверне помилку по TON — перевір актуальний код
+                # активу після ребрендингу Toncoin → GRAM.
+                "currency_type": "fiat",
+                "fiat": "USD",
+                "accepted_assets": "USDT,TON",
                 "amount": str(COURSE_PRICE_USD),
                 "description": COURSE_NAME,
                 "payload": str(user_id),
@@ -391,10 +500,7 @@ async def pay_crypto_auto(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("✅ Я оплатил", callback_data="check_payment")],
     ])
     await query.message.reply_text(
-        f"<b>Оплата через CryptoBot</b>\n\n"
-        f"Сумма: <b>${COURSE_PRICE_USD}</b> (в USDT)\n\n"
-        f"Перейди к оплате и после успешной оплаты вернись сюда и нажми «Я оплатил».\n\n"
-        f"⚡️ Доступ откроется автоматически после подтверждения.",
+        MSG_PAYMENT_CRYPTO_AUTO.format(amount=COURSE_PRICE_USD),
         reply_markup=keyboard,
         parse_mode="HTML"
     )
@@ -486,6 +592,46 @@ async def admin_approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Использование: /approve USER_ID")
 
 
+async def admin_refund(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/refund USER_ID — повертає зірки і знімає доступ.
+    Працює лише для оплат через Stars: у карти й крипти повернення руками."""
+    if str(update.effective_user.id) != str(ADMIN_ID):
+        return
+    try:
+        target_id = int(context.args[0])
+    except (IndexError, ValueError):
+        await update.message.reply_text("Использование: /refund USER_ID")
+        return
+
+    charge_id = db.get_stars_charge(target_id)
+    if not charge_id:
+        await update.message.reply_text(
+            f"У {target_id} немає оплати зірками. "
+            f"Повернення по карті/крипті роби вручну."
+        )
+        return
+
+    try:
+        await context.bot.refund_star_payment(
+            user_id=target_id, telegram_payment_charge_id=charge_id
+        )
+    except Exception as e:
+        logger.error(f"Refund failed for {target_id}: {e}")
+        await update.message.reply_text(f"❌ Помилка повернення: {e}")
+        return
+
+    db.unmark_paid(target_id)
+    await update.message.reply_text(f"✅ Зірки повернуто, доступ знято: {target_id}")
+    try:
+        await context.bot.send_message(
+            chat_id=target_id,
+            text="Звёзды возвращены на твой баланс. Доступ к протоколу закрыт.\n\n"
+                 "Если это ошибка — напиши /support",
+        )
+    except Exception:
+        pass
+
+
 FUNNEL_STEPS = [
     ("start",      "Запустили бота"),
     ("guide_sent", "Получили гайд"),
@@ -546,6 +692,8 @@ async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"💳 <b>СПОСОБЫ ОПЛАТЫ</b>\n\n"
         f"Выбрали карту: <b>{counts.get('pay_card_click', 0)}</b>\n"
         f"  \u2192 дошли до страницы: <b>{counts.get('pay_page_open', 0)}</b>\n"
+        f"Выбрали звёзды: <b>{counts.get('pay_stars_click', 0)}</b>\n"
+        f"  \u2192 получили счёт: <b>{counts.get('stars_invoice_sent', 0)}</b>\n"
         f"Выбрали крипту: <b>{counts.get('pay_crypto_click', 0)}</b>\n"
         f"  \u2192 CryptoBot: <b>{counts.get('crypto_auto_invoice', 0)}</b>\n"
         f"  \u2192 вручную: <b>{counts.get('crypto_manual_open', 0)}</b>\n"
@@ -790,9 +938,13 @@ async def main():
     app.add_handler(CommandHandler("approve", admin_approve))
     app.add_handler(CommandHandler("stats", admin_stats))
     app.add_handler(CommandHandler("funnel", admin_funnel_source))
+    app.add_handler(CommandHandler("refund", admin_refund))
     app.add_handler(CallbackQueryHandler(guide_read_callback, pattern="^guide_read$"))
     app.add_handler(CallbackQueryHandler(buy_course, pattern="^buy_course$"))
     app.add_handler(CallbackQueryHandler(pay_wayforpay, pattern="^pay_wayforpay$"))
+    app.add_handler(CallbackQueryHandler(pay_stars, pattern="^pay_stars$"))
+    app.add_handler(PreCheckoutQueryHandler(precheckout_callback))
+    app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment_callback))
     app.add_handler(CallbackQueryHandler(crypto_menu, pattern="^crypto_menu$"))
     app.add_handler(CallbackQueryHandler(pay_crypto_auto, pattern="^pay_crypto_auto$"))
     app.add_handler(CallbackQueryHandler(pay_crypto_manual, pattern="^pay_crypto_manual$"))

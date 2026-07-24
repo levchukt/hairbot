@@ -35,6 +35,7 @@ class Database:
             for col, definition in [
                 ("source", "TEXT DEFAULT 'direct'"),
                 ("offer_sent", "INTEGER DEFAULT 0"),
+                ("stars_charge_id", "TEXT"),
             ]:
                 try:
                     conn.execute(f"ALTER TABLE users ADD COLUMN {col} {definition}")
@@ -147,6 +148,45 @@ class Database:
             """, (datetime.utcnow().isoformat(), method, user_id))
             conn.commit()
         self.log_event(user_id, "paid")
+
+    def get_source(self, user_id: int) -> str:
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT source FROM users WHERE user_id = ?", (user_id,)
+            ).fetchone()
+            return (row[0] if row and row[0] else "direct")
+
+    # ─────────────────────────────────────────
+    #  TELEGRAM STARS
+    # ─────────────────────────────────────────
+
+    def save_stars_charge(self, user_id: int, charge_id: str):
+        """charge_id потрібен для refundStarPayment. Без нього повернення неможливе."""
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE users SET stars_charge_id = ? WHERE user_id = ?",
+                (charge_id, user_id)
+            )
+            conn.commit()
+
+    def get_stars_charge(self, user_id: int) -> Optional[str]:
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT stars_charge_id FROM users WHERE user_id = ?", (user_id,)
+            ).fetchone()
+            return row[0] if row and row[0] else None
+
+    def unmark_paid(self, user_id: int):
+        """Знімає доступ після повернення коштів."""
+        with self._conn() as conn:
+            conn.execute("""
+                UPDATE users SET paid = 0, pay_method = 'refunded'
+                WHERE user_id = ?
+            """, (user_id,))
+            conn.execute(
+                "DELETE FROM events WHERE user_id = ? AND event = 'paid'", (user_id,)
+            )
+            conn.commit()
 
     def mark_offer_sent(self, user_id: int):
         with self._conn() as conn:

@@ -21,6 +21,21 @@ CRYPTO_WALLET_USDT = os.getenv("CRYPTO_WALLET_USDT", "")  # TRC-20
 CRYPTOBOT_API_TOKEN = os.getenv("CRYPTOBOT_API_TOKEN", "")
 CRYPTOBOT_API_URL = os.getenv("CRYPTOBOT_API_URL", "https://pay.crypt.bot/api")
 
+# Telegram Stars (XTR)
+# Telegram виплачує ~$0.013 за зірку. Щоб отримати $9 нетто → ~700 зірок.
+# Перевіряй курс перед зміною ціни: він плаваючий.
+STARS_PRICE = int(os.getenv("STARS_PRICE", "700"))
+
+# Посилання на сервіс купівлі зірок за рублі (СБП).
+# ОБОВ'ЯЗКОВО протестуй сервіс сам перед тим, як вести туди трафік.
+# Якщо порожнє — кнопка «Купить за рубли» не показується.
+STARS_SHOP_URL = os.getenv("STARS_SHOP_URL", "")
+
+# Джерела трафіку, що починаються з цього префікса, отримують
+# порядок кнопок «Stars → крипта» (без картки).
+# Приклад тегів: ru_reel01, ru_dht, ru_cortisol
+RU_SOURCE_PREFIX = os.getenv("RU_SOURCE_PREFIX", "ru")
+
 # Course
 COURSE_NAME = "ПОЛНЫЙ ПРОТОКОЛ ВОССТАНОВЛЕНИЯ ВОЛОС"
 COURSE_PRICE_USD = int(os.getenv("COURSE_PRICE_USD", "19"))
