@@ -22,7 +22,7 @@ from config import (
     WAYFORPAY_MERCHANT_KEY, WAYFORPAY_DOMAIN, COURSE_PRICE_USD,
     COURSE_NAME, CRYPTO_WALLET_BTC, CRYPTO_WALLET_USDT, ADMIN_ID,
     CRYPTOBOT_API_TOKEN, CRYPTOBOT_API_URL, OFFER_FOLLOWUP_DELAY_SECONDS,
-    STARS_PRICE, STARS_SHOP_URL, RU_SOURCE_PREFIX
+    STARS_PRICE, STARS_SHOP_URL, RU_SOURCE_PREFIX, PAY_SURVEY_DELAY_SECONDS
 )
 from messages import (
     MSG_WELCOME, MSG_GUIDE_CAPTION, MSG_PAIN, MSG_OFFER, MSG_FOLLOWUP,
@@ -30,7 +30,7 @@ from messages import (
     MSG_PAYMENT_CHOOSE, MSG_PAYMENT_CRYPTO_CHOOSE, MSG_PAYMENT_CRYPTO_MANUAL,
     MSG_PAYMENT_STARS, MSG_PAYMENT_STARS_SHOP, MSG_PAYMENT_CRYPTO_AUTO,
     MSG_PAYMENT_SUCCESS, MSG_PAYMENT_ALREADY,
-    MSG_SUPPORT
+    MSG_SUPPORT, MSG_PAY_PROBLEM, MSG_PAY_SURVEY, MSG_PAY_SURVEY_REPLIES
 )
 from db import Database
 
@@ -309,6 +309,17 @@ async def buy_course(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="HTML"
     )
 
+    # Опитування «Что помешало?» — один раз на людину, якщо так і не оплатить
+    job_name = f"pay_survey_{user_id}"
+    if not db.has_event(user_id, "pay_survey_sent") and not context.job_queue.get_jobs_by_name(job_name):
+        context.job_queue.run_once(
+            scheduled_pay_survey,
+            when=PAY_SURVEY_DELAY_SECONDS,
+            chat_id=user_id,
+            user_id=user_id,
+            name=job_name
+        )
+
 
 def _is_ru_traffic(user_id: int) -> bool:
     """Джерела на кшталт ru_reel01 → російський трафік.
@@ -323,13 +334,91 @@ def _payment_keyboard(user_id: int) -> list:
     )]
     crypto_btn = [InlineKeyboardButton("₿ Оплатить криптой", callback_data="crypto_menu")]
     card_btn = [InlineKeyboardButton("💳 Visa / Mastercard", callback_data="pay_wayforpay")]
-    help_btn = [InlineKeyboardButton("❓ Вопрос / помощь", callback_data="support")]
+    help_btn = [InlineKeyboardButton("😕 Не получается оплатить?", callback_data="pay_problem")]
 
     # Для ru-джерел картка йде останньою: вона працює лише для карт,
     # випущених поза РФ, тож першими мають бути робочі способи.
     if _is_ru_traffic(user_id):
         return [stars_btn, crypto_btn, card_btn, help_btn]
     return [card_btn, stars_btn, crypto_btn, help_btn]
+
+
+def _user_line(user) -> str:
+    uname = f"@{user.username}" if user.username else "без username"
+    return f"<b>{user.first_name}</b> ({uname}) · {db.get_source(user.id)}"
+
+
+async def pay_problem(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """«Не получается оплатить?» — людині підказка, адміну сповіщення.
+    Що вона напише далі, перешле relay_user_message."""
+    query = update.callback_query
+    await query.answer()
+    user = query.from_user
+    db.log_event(user.id, "pay_problem")
+
+    await query.message.reply_text(MSG_PAY_PROBLEM, parse_mode="HTML")
+
+    if ADMIN_ID:
+        tried = [label for event, label in (
+            ("pay_card_click", "карта"), ("pay_stars_click", "звёзды"), ("pay_crypto_click", "крипта")
+        ) if db.has_event(user.id, event)]
+        await context.bot.send_message(
+            chat_id=ADMIN_ID,
+            text=f"🆘 <b>Не получается оплатить</b>\n{_user_line(user)}\n"
+                 f"Пробував: {', '.join(tried) or 'нічого не вибрав'}\n\n"
+                 f"Написати: <code>/dm {user.id} </code>",
+            parse_mode="HTML"
+        )
+
+
+async def scheduled_pay_survey(context: ContextTypes.DEFAULT_TYPE):
+    user_id = context.job.user_id
+    if db.is_paid(user_id) or db.has_event(user_id, "pay_survey_sent"):
+        return
+    db.log_event(user_id, "pay_survey_sent")
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("💳 Нет удобного способа оплаты", callback_data="why_no_method")],
+        [InlineKeyboardButton("💸 Дорого", callback_data="why_expensive")],
+        [InlineKeyboardButton("🤔 Передумал", callback_data="why_changed_mind")],
+        [InlineKeyboardButton("❔ Не уверен, что поможет", callback_data="why_no_trust")],
+    ])
+    await context.bot.send_message(
+        chat_id=user_id, text=MSG_PAY_SURVEY, reply_markup=keyboard, parse_mode="HTML"
+    )
+
+
+PAY_SURVEY_REASONS = {
+    "no_method": "нет удобной оплаты",
+    "expensive": "дорого",
+    "changed_mind": "передумал",
+    "no_trust": "не уверен, что поможет",
+}
+
+
+async def pay_survey_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user = query.from_user
+    reason = query.data.removeprefix("why_")
+    if reason not in PAY_SURVEY_REASONS:
+        return
+    await query.edit_message_reply_markup(reply_markup=None)
+    db.log_event(user.id, f"why_{reason}")
+
+    reply_markup = None
+    if reason == "no_method" and not db.is_paid(user.id):
+        reply_markup = InlineKeyboardMarkup(_payment_keyboard(user.id))
+    await query.message.reply_text(
+        MSG_PAY_SURVEY_REPLIES[reason], reply_markup=reply_markup, parse_mode="HTML"
+    )
+
+    if ADMIN_ID:
+        await context.bot.send_message(
+            chat_id=ADMIN_ID,
+            text=f"📝 <b>Чому не купив:</b> {PAY_SURVEY_REASONS[reason]}\n{_user_line(user)}\n\n"
+                 f"Написати: <code>/dm {user.id} </code>",
+            parse_mode="HTML"
+        )
 
 
 async def pay_wayforpay(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -754,6 +843,14 @@ async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     stats = db.get_stats()
     counts = db.event_counts()
     stuck = db.stuck_users()
+    paid_methods = db.paid_by_method()
+    method_labels = {"stars": "звёзды", "wayforpay": "карта", "cryptobot": "CryptoBot", "crypto_manual": "крипта вручную"}
+    paid_lines = "".join(
+        f"\n  {method_labels.get(m, m)}: <b>{n}</b>" for m, n in paid_methods.items()
+    ) or "\n  пока нет"
+    why_lines = "".join(
+        f"\n  {label}: <b>{counts.get(f'why_{key}', 0)}</b>" for key, label in PAY_SURVEY_REASONS.items()
+    )
 
     source_lines = ""
     for s in stats["sources"]:
@@ -780,7 +877,12 @@ async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Выбрали крипту: <b>{counts.get('pay_crypto_click', 0)}</b>\n"
         f"  \u2192 CryptoBot: <b>{counts.get('crypto_auto_invoice', 0)}</b>\n"
         f"  \u2192 вручную: <b>{counts.get('crypto_manual_open', 0)}</b>\n"
-        f"Нажали «Я оплатил»: <b>{counts.get('check_payment_click', 0)}</b>\n\n"
+        f"Нажали «Я оплатил»: <b>{counts.get('check_payment_click', 0)}</b>\n"
+        f"Нажали «Не получается оплатить»: <b>{counts.get('pay_problem', 0)}</b>\n\n"
+        f"Оплаты по способам:{paid_lines}\n\n"
+        f"━━━━━━━━━━━━━━━\n\n"
+        f"❓ <b>ПОЧЕМУ НЕ КУПИЛИ</b> (опрос отправлен: {counts.get('pay_survey_sent', 0)})\n"
+        f"{why_lines}\n\n"
         f"━━━━━━━━━━━━━━━\n\n"
         f"📬 <b>ДОГРЕВЫ</b>\n\n"
         f"Через час: <b>{counts.get('followup_1h', 0)}</b>\n"
@@ -1035,6 +1137,8 @@ async def main():
     app.add_handler(CallbackQueryHandler(pay_crypto_manual, pattern="^pay_crypto_manual$"))
     app.add_handler(CallbackQueryHandler(crypto_manual_sent, pattern="^crypto_manual_sent$"))
     app.add_handler(CallbackQueryHandler(check_payment, pattern="^check_payment$"))
+    app.add_handler(CallbackQueryHandler(pay_problem, pattern="^pay_problem$"))
+    app.add_handler(CallbackQueryHandler(pay_survey_answer, pattern="^why_"))
     app.add_handler(CallbackQueryHandler(support_callback, pattern="^support$"))
     # Останнім: ловить усе, що не команда і не платіж
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, relay_user_message))

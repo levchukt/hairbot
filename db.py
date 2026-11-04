@@ -105,12 +105,12 @@ class Database:
                     WHERE e.event = 'buy_click'
                       AND NOT EXISTS (
                           SELECT 1 FROM events x WHERE x.user_id = e.user_id
-                          AND x.event IN ('pay_card_click','pay_crypto_click')
+                          AND x.event IN ('pay_card_click','pay_crypto_click','pay_stars_click')
                       )
                 """),
                 "method_no_pay": q("""
                     SELECT COUNT(DISTINCT e.user_id) FROM events e
-                    WHERE e.event IN ('pay_card_click','pay_crypto_click')
+                    WHERE e.event IN ('pay_card_click','pay_crypto_click','pay_stars_click')
                       AND NOT EXISTS (SELECT 1 FROM events x WHERE x.user_id = e.user_id AND x.event = 'paid')
                 """),
                 "buy_no_pay": q("""
@@ -119,6 +119,21 @@ class Database:
                       AND NOT EXISTS (SELECT 1 FROM events x WHERE x.user_id = e.user_id AND x.event = 'paid')
                 """),
             }
+
+    def has_event(self, user_id: int, event: str) -> bool:
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM events WHERE user_id = ? AND event = ?", (user_id, event)
+            ).fetchone()
+            return row is not None
+
+    def paid_by_method(self) -> dict:
+        """Скільки оплат пройшло кожним способом (stars, wayforpay, cryptobot...)."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT pay_method, COUNT(*) FROM users WHERE paid = 1 GROUP BY pay_method"
+            ).fetchall()
+        return {(r[0] or "unknown"): r[1] for r in rows}
 
     def add_user(self, user_id: int, username: Optional[str], first_name: Optional[str], source: str = "direct"):
         with self._conn() as conn:

@@ -42,3 +42,6 @@ COURSE_PRICE_USD = int(os.getenv("COURSE_PRICE_USD", "19"))
 
 # Follow-up після офера, якщо людина не оплатила (секунди). За замовчуванням 45 хв.
 OFFER_FOLLOWUP_DELAY_SECONDS = int(os.getenv("OFFER_FOLLOWUP_DELAY_SECONDS", "2700"))
+
+# Опитування «Что помешало?» тим, хто натиснув «Купить» і не оплатив (секунди). 30 хв.
+PAY_SURVEY_DELAY_SECONDS = int(os.getenv("PAY_SURVEY_DELAY_SECONDS", "1800"))
