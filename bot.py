@@ -7,7 +7,7 @@ import asyncio
 import re
 
 from telegram import (
-    Update, InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice
+    Update, InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice, InputMediaPhoto
 )
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
@@ -30,7 +30,8 @@ from messages import (
     MSG_PAYMENT_CHOOSE, MSG_PAYMENT_CRYPTO_CHOOSE, MSG_PAYMENT_CRYPTO_MANUAL,
     MSG_PAYMENT_STARS, MSG_PAYMENT_STARS_SHOP, MSG_PAYMENT_CRYPTO_AUTO,
     MSG_PAYMENT_SUCCESS, MSG_PAYMENT_ALREADY,
-    MSG_SUPPORT, MSG_PAY_PROBLEM, MSG_PAY_SURVEY, MSG_PAY_SURVEY_REPLIES
+    MSG_SUPPORT, MSG_PAY_PROBLEM, MSG_PAY_SURVEY, MSG_PAY_SURVEY_REPLIES,
+    MSG_PREVIEW_CAPTION
 )
 from db import Database
 
@@ -203,6 +204,8 @@ async def send_sales_sequence(user_id: int, context: ContextTypes.DEFAULT_TYPE):
     await context.bot.send_message(chat_id=user_id, text=MSG_PAIN, parse_mode="HTML")
     await asyncio.sleep(10)
 
+    await send_offer_preview(user_id, context)
+
     keyboard = InlineKeyboardMarkup([[
         InlineKeyboardButton(f"💳 Купить протокол — ${COURSE_PRICE_USD}", callback_data="buy_course")
     ]])
@@ -237,6 +240,33 @@ async def send_sales_sequence(user_id: int, context: ContextTypes.DEFAULT_TYPE):
         user_id=user_id,
         name=f"followup_day3_{user_id}"
     )
+
+
+# Скріни платного протоколу (зміст + сторінка), що йдуть перед оффером.
+# Немає файлів — прев'ю просто пропускається.
+PREVIEW_PATHS = ["preview1.png", "preview2.png"]
+
+
+async def send_offer_preview(user_id: int, context: ContextTypes.DEFAULT_TYPE):
+    paths = [p for p in PREVIEW_PATHS if os.path.exists(p)]
+    if not paths:
+        return
+    try:
+        files = [open(p, "rb") for p in paths]
+        try:
+            media = [
+                InputMediaPhoto(f, caption=MSG_PREVIEW_CAPTION if i == 0 else None)
+                for i, f in enumerate(files)
+            ]
+            await context.bot.send_media_group(chat_id=user_id, media=media)
+        finally:
+            for f in files:
+                f.close()
+        db.log_event(user_id, "preview_sent")
+        await asyncio.sleep(2)
+    except Exception as e:
+        # Прев'ю не повинно ламати оффер
+        logger.error(f"Preview send failed for {user_id}: {e}")
 
 
 async def scheduled_offer_followup(context: ContextTypes.DEFAULT_TYPE):
