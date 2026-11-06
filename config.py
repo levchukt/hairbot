@@ -40,6 +40,22 @@ RU_SOURCE_PREFIX = os.getenv("RU_SOURCE_PREFIX", "ru")
 COURSE_NAME = "ПОЛНЫЙ ПРОТОКОЛ ВОССТАНОВЛЕНИЯ ВОЛОС"
 COURSE_PRICE_USD = int(os.getenv("COURSE_PRICE_USD", "19"))
 
+
+def _parse_price_arms(raw: str) -> list:
+    arms = []
+    for part in raw.split(","):
+        if ":" in part:
+            usd, stars = part.split(":", 1)
+            arms.append((int(usd.strip()), int(stars.strip())))
+    return arms
+
+
+# A/B-тест ціни: пари «долари:зірки», напр. "9:700,12:930".
+# Кожен НОВИЙ користувач випадково отримує одну пару й бачить її всюди
+# (оффер, кнопки, зірки, WayForPay, CryptoBot). Порожньо — тесту немає,
+# усі бачать COURSE_PRICE_USD / STARS_PRICE.
+PRICE_TEST_ARMS = _parse_price_arms(os.getenv("PRICE_TEST_ARMS", ""))
+
 # Follow-up після офера, якщо людина не оплатила (секунди). За замовчуванням 45 хв.
 OFFER_FOLLOWUP_DELAY_SECONDS = int(os.getenv("OFFER_FOLLOWUP_DELAY_SECONDS", "2700"))
 

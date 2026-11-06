@@ -36,6 +36,8 @@ class Database:
                 ("source", "TEXT DEFAULT 'direct'"),
                 ("offer_sent", "INTEGER DEFAULT 0"),
                 ("stars_charge_id", "TEXT"),
+                ("price_usd", "INTEGER"),
+                ("price_stars", "INTEGER"),
             ]:
                 try:
                     conn.execute(f"ALTER TABLE users ADD COLUMN {col} {definition}")
@@ -135,13 +137,39 @@ class Database:
             ).fetchall()
         return {(r[0] or "unknown"): r[1] for r in rows}
 
-    def add_user(self, user_id: int, username: Optional[str], first_name: Optional[str], source: str = "direct"):
+    def add_user(self, user_id: int, username: Optional[str], first_name: Optional[str], source: str = "direct",
+                 price_usd: Optional[int] = None, price_stars: Optional[int] = None):
         with self._conn() as conn:
             conn.execute("""
-                INSERT OR IGNORE INTO users (user_id, username, first_name, joined_at, source)
-                VALUES (?, ?, ?, ?, ?)
-            """, (user_id, username, first_name, datetime.utcnow().isoformat(), source))
+                INSERT OR IGNORE INTO users (user_id, username, first_name, joined_at, source, price_usd, price_stars)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (user_id, username, first_name, datetime.utcnow().isoformat(), source, price_usd, price_stars))
             conn.commit()
+
+    def get_price(self, user_id: int) -> Optional[tuple]:
+        """(долари, зірки) з тесту ціни, або None — тоді діє базова ціна."""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT price_usd, price_stars FROM users WHERE user_id = ?", (user_id,)
+            ).fetchone()
+        if row and row[0] and row[1]:
+            return row[0], row[1]
+        return None
+
+    def price_test_stats(self) -> list:
+        """Старти, «Купить» і оплати для кожної ціни тесту (лише ті, кому ціну призначено)."""
+        with self._conn() as conn:
+            rows = conn.execute("""
+                SELECT u.price_usd,
+                       COUNT(*),
+                       SUM(EXISTS(SELECT 1 FROM events e WHERE e.user_id = u.user_id AND e.event = 'buy_click')),
+                       SUM(u.paid)
+                FROM users u
+                WHERE u.price_usd IS NOT NULL
+                GROUP BY u.price_usd
+                ORDER BY u.price_usd
+            """).fetchall()
+        return [{"price": r[0], "starts": r[1], "buy": r[2] or 0, "paid": r[3] or 0} for r in rows]
 
     def user_exists(self, user_id: int) -> bool:
         with self._conn() as conn:

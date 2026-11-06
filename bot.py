@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import time
 import asyncio
+import random
 import re
 
 from telegram import (
@@ -22,7 +23,8 @@ from config import (
     WAYFORPAY_MERCHANT_KEY, WAYFORPAY_DOMAIN, COURSE_PRICE_USD,
     COURSE_NAME, CRYPTO_WALLET_BTC, CRYPTO_WALLET_USDT, ADMIN_ID,
     CRYPTOBOT_API_TOKEN, CRYPTOBOT_API_URL, OFFER_FOLLOWUP_DELAY_SECONDS,
-    STARS_PRICE, STARS_SHOP_URL, RU_SOURCE_PREFIX, PAY_SURVEY_DELAY_SECONDS
+    STARS_PRICE, STARS_SHOP_URL, RU_SOURCE_PREFIX, PAY_SURVEY_DELAY_SECONDS,
+    PRICE_TEST_ARMS
 )
 from messages import (
     MSG_WELCOME, MSG_GUIDE_CAPTION, MSG_PAIN, MSG_OFFER, MSG_FOLLOWUP,
@@ -49,6 +51,11 @@ db = Database()
 SOURCE_RE = re.compile(r'^[a-z0-9_]{1,20}$')
 
 
+def _price(user_id: int) -> tuple:
+    """(долари, зірки) для цієї людини: її ціна з тесту або базова."""
+    return db.get_price(user_id) or (COURSE_PRICE_USD, STARS_PRICE)
+
+
 # ─────────────────────────────────────────────
 #  /start
 # ─────────────────────────────────────────────
@@ -63,7 +70,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             source = raw
 
     is_new = not db.user_exists(user.id)
-    db.add_user(user.id, user.username, user.first_name, source=source)
+    # Тест ціни: новий користувач отримує випадкову ціну один раз і назавжди
+    price_usd, price_stars = random.choice(PRICE_TEST_ARMS) if (is_new and PRICE_TEST_ARMS) else (None, None)
+    db.add_user(user.id, user.username, user.first_name, source=source,
+                price_usd=price_usd, price_stars=price_stars)
     db.log_event(user.id, "start")
 
     if not is_new:
@@ -73,7 +83,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await send_course_access(user.id, context)
         else:
             keyboard = InlineKeyboardMarkup([[
-                InlineKeyboardButton(f"💳 Открыть полный протокол — ${COURSE_PRICE_USD}", callback_data="buy_course")
+                InlineKeyboardButton(f"💳 Открыть полный протокол — ${_price(user.id)[0]}", callback_data="buy_course")
             ]])
             await update.message.reply_text(
                 "Гайд ты уже получил 👆\n\nГотов перейти к полному протоколу?",
@@ -207,11 +217,11 @@ async def send_sales_sequence(user_id: int, context: ContextTypes.DEFAULT_TYPE):
     await send_offer_preview(user_id, context)
 
     keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton(f"💳 Купить протокол — ${COURSE_PRICE_USD}", callback_data="buy_course")
+        InlineKeyboardButton(f"💳 Купить протокол — ${_price(user_id)[0]}", callback_data="buy_course")
     ]])
     await context.bot.send_message(
         chat_id=user_id,
-        text=MSG_OFFER,
+        text=MSG_OFFER.format(price=_price(user_id)[0]),
         reply_markup=keyboard,
         parse_mode="HTML"
     )
@@ -291,7 +301,7 @@ async def scheduled_followup_day1(context: ContextTypes.DEFAULT_TYPE):
         return
     db.log_event(user_id, "followup_day1")
     keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton(f"💳 Купить протокол — ${COURSE_PRICE_USD}", callback_data="buy_course")
+        InlineKeyboardButton(f"💳 Купить протокол — ${_price(user_id)[0]}", callback_data="buy_course")
     ]])
     await context.bot.send_message(
         chat_id=user_id,
@@ -307,7 +317,7 @@ async def scheduled_followup_day3(context: ContextTypes.DEFAULT_TYPE):
         return
     db.log_event(user_id, "followup_day3")
     keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton(f"💳 Купить протокол — ${COURSE_PRICE_USD}", callback_data="buy_course")
+        InlineKeyboardButton(f"💳 Купить протокол — ${_price(user_id)[0]}", callback_data="buy_course")
     ]])
     await context.bot.send_message(
         chat_id=user_id,
@@ -360,7 +370,7 @@ def _is_ru_traffic(user_id: int) -> bool:
 
 def _payment_keyboard(user_id: int) -> list:
     stars_btn = [InlineKeyboardButton(
-        f"⭐ Оплатить звёздами — {STARS_PRICE}", callback_data="pay_stars"
+        f"⭐ Оплатить звёздами — {_price(user_id)[1]}", callback_data="pay_stars"
     )]
     crypto_btn = [InlineKeyboardButton("₿ Оплатить криптой", callback_data="crypto_menu")]
     card_btn = [InlineKeyboardButton("💳 Visa / Mastercard", callback_data="pay_wayforpay")]
@@ -467,7 +477,7 @@ async def pay_wayforpay(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ])
     await query.message.reply_text(
         f"<b>Оплата через WayForPay</b>\n\n"
-        f"Сумма: <b>${COURSE_PRICE_USD}</b>\n\n"
+        f"Сумма: <b>${_price(user_id)[0]}</b>\n\n"
         f"Перейди к оплате и после успешной оплаты вернись сюда и нажми «Я оплатил».\n\n"
         f"⚡️ Доступ откроется автоматически после подтверждения.",
         reply_markup=keyboard,
@@ -490,7 +500,8 @@ async def pay_stars(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_course_access(user_id, context)
         return
 
-    text = MSG_PAYMENT_STARS.format(stars=STARS_PRICE)
+    stars = _price(user_id)[1]
+    text = MSG_PAYMENT_STARS.format(stars=stars)
     buttons = []
     if STARS_SHOP_URL:
         text += MSG_PAYMENT_STARS_SHOP
@@ -512,7 +523,7 @@ async def pay_stars(update: Update, context: ContextTypes.DEFAULT_TYPE):
         payload=f"protocol_{user_id}",
         provider_token=None,
         currency="XTR",
-        prices=[LabeledPrice(label=COURSE_NAME, amount=STARS_PRICE)],
+        prices=[LabeledPrice(label=COURSE_NAME, amount=stars)],
     )
     db.log_event(user_id, "stars_invoice_sent")
 
@@ -590,7 +601,7 @@ async def create_cryptobot_invoice(user_id: int) -> str | None:
                 "currency_type": "fiat",
                 "fiat": "USD",
                 "accepted_assets": "USDT,TON",
-                "amount": str(COURSE_PRICE_USD),
+                "amount": str(_price(user_id)[0]),
                 "description": COURSE_NAME,
                 "payload": str(user_id),
                 "paid_btn_name": "openBot",
@@ -623,7 +634,7 @@ async def pay_crypto_auto(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("✅ Я оплатил", callback_data="check_payment")],
     ])
     await query.message.reply_text(
-        MSG_PAYMENT_CRYPTO_AUTO.format(amount=COURSE_PRICE_USD),
+        MSG_PAYMENT_CRYPTO_AUTO.format(amount=_price(user_id)[0]),
         reply_markup=keyboard,
         parse_mode="HTML"
     )
@@ -640,7 +651,7 @@ async def pay_crypto_manual(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ])
     await query.message.reply_text(
         MSG_PAYMENT_CRYPTO_MANUAL.format(
-            amount=COURSE_PRICE_USD,
+            amount=_price(query.from_user.id)[0],
             btc=CRYPTO_WALLET_BTC,
             usdt=CRYPTO_WALLET_USDT,
         ),
@@ -888,6 +899,19 @@ async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conv = (s["paid"] / s["total"] * 100) if s["total"] else 0
         source_lines += f"\n  {label}: {s['total']} \u2192 {s['paid']} оплат ({conv:.1f}%)"
 
+    # Тест ціни: головне — гроші з одного старту, а не лише конверсія
+    price_lines = ""
+    for a in db.price_test_stats():
+        conv = (a["paid"] / a["starts"] * 100) if a["starts"] else 0
+        per_start = (a["paid"] * a["price"] / a["starts"]) if a["starts"] else 0
+        price_lines += (
+            f"\n  <b>${a['price']}</b>: {a['starts']} стартов → {a['buy']} «Купить» → "
+            f"{a['paid']} оплат ({conv:.1f}%) · <b>${per_start:.2f}</b> со старта"
+        )
+    price_block = (
+        f"━━━━━━━━━━━━━━━\n\n🧪 <b>ТЕСТ ЦЕНЫ</b>{price_lines}\n\n" if price_lines else ""
+    )
+
     text = (
         f"📊 <b>ВОРОНКА</b>\n\n"
         f"{_build_funnel_text(counts)}\n\n"
@@ -920,6 +944,7 @@ async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"День 3: <b>{counts.get('followup_day3', 0)}</b>\n\n"
         f"━━━━━━━━━━━━━━━\n\n"
         f"🌐 <b>ИСТОЧНИКИ</b>{source_lines}\n\n"
+        f"{price_block}"
         f"━━━━━━━━━━━━━━━\n\n"
         f"👥 Всего: <b>{stats['total_users']}</b>\n"
         f"💰 Оплатили: <b>{stats['paid_users']}</b>\n"
@@ -969,10 +994,11 @@ def generate_wayforpay_data(user_id: int) -> dict:
     """Повертає всі поля для POST-форми WayForPay."""
     order_id = f"hair_{user_id}_{int(time.time())}"
     order_date = int(time.time())
+    price = _price(user_id)[0]
 
     sign_string = (
         f"{WAYFORPAY_MERCHANT_ACCOUNT};{WAYFORPAY_DOMAIN};{order_id};"
-        f"{order_date};{COURSE_PRICE_USD};USD;{COURSE_NAME};1;{COURSE_PRICE_USD}"
+        f"{order_date};{price};USD;{COURSE_NAME};1;{price}"
     )
     signature = hmac.new(
         WAYFORPAY_MERCHANT_KEY.encode(),
@@ -985,11 +1011,11 @@ def generate_wayforpay_data(user_id: int) -> dict:
         "merchantDomainName": WAYFORPAY_DOMAIN,
         "orderReference": order_id,
         "orderDate": str(order_date),
-        "amount": str(COURSE_PRICE_USD),
+        "amount": str(price),
         "currency": "USD",
         "productName": COURSE_NAME,
         "productCount": "1",
-        "productPrice": str(COURSE_PRICE_USD),
+        "productPrice": str(price),
         "merchantSignature": signature,
          "returnUrl": "https://t.me/protocol_hair_bot",
         "serviceUrl": "https://web-production-cb698.up.railway.app/webhook/wayforpay",
